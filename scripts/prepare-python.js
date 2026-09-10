@@ -327,17 +327,23 @@ function installPackages(siteDir, platformTag, pythonBin) {
   ensureDir(siteDir);
 
   const pipPython = process.env.OPEN_COWORK_PIP_PYTHON || pythonBin;
-  const packageSpecs = [...BUNDLED_GUI_PACKAGES];
+  // pyobjc-framework-Quartz is macOS-only — pip cannot find it on Linux,
+  // so we filter it out for non-darwin platform tags.
+  const isDarwin = platformTag.startsWith('macosx');
+  const packageSpecs = BUNDLED_GUI_PACKAGES.filter(
+    (pkg) => isDarwin || pkg !== 'pyobjc-framework-Quartz'
+  );
   const pythonRoot = path.resolve(siteDir, '..');
   const runtimeMarkerFile = resolveRuntimeVersionFile(pythonRoot);
   const runtimeMarker = exists(runtimeMarkerFile)
     ? fs.readFileSync(runtimeMarkerFile, 'utf-8').trim()
     : '';
 
-  // Avoid re-install if already present
+  // Avoid re-install if already present. Quartz is only required on macOS.
   const hasPillow = exists(path.join(siteDir, 'PIL'));
-  const hasQuartz = exists(path.join(siteDir, 'Quartz'));
-  if (hasPillow && hasQuartz && runtimeMarker === BUNDLED_RUNTIME_FINGERPRINT) {
+  const hasQuartz = isDarwin ? exists(path.join(siteDir, 'Quartz')) : true;
+  const expectedFingerprint = packageSpecs.join('|');
+  if (hasPillow && hasQuartz && runtimeMarker === expectedFingerprint) {
     console.log(`✓ Python packages already present in ${siteDir}`);
     return;
   }
@@ -354,7 +360,7 @@ function installPackages(siteDir, platformTag, pythonBin) {
     `${packageSpecs.map((pkg) => JSON.stringify(pkg)).join(' ')}`;
 
   execSync(cmd, { stdio: 'inherit' });
-  fs.writeFileSync(runtimeMarkerFile, BUNDLED_RUNTIME_FINGERPRINT, 'utf-8');
+  fs.writeFileSync(runtimeMarkerFile, packageSpecs.join('|'), 'utf-8');
 }
 
 /**
