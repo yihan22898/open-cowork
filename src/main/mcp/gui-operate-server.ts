@@ -4493,10 +4493,14 @@ async function callVisionAPIWithTimeout(
     const Anthropic = require('@anthropic-ai/sdk');
     const anthropicRouteBaseUrl = anthropicBaseUrl || baseUrl;
     const anthropicRouteModel = anthropicModel || model;
+    const isMiniMaxRoute = (anthropicRouteBaseUrl || '').includes('minimaxi.com');
     const anthropic = new Anthropic({
       apiKey: selectedApiKey,
       baseURL: anthropicRouteBaseUrl,
       timeout: timeoutMs,
+      ...(isMiniMaxRoute
+        ? { defaultHeaders: { 'X-Api-Key': selectedApiKey } }
+        : {}),
     });
 
     // Wrap the API call with timeout promise

@@ -982,9 +982,11 @@ async function callVisionAPI(
     // Use Anthropic API format
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     const Anthropic = require('@anthropic-ai/sdk');
+    const isMiniMaxRoute = (baseUrl || '').includes('minimaxi.com');
     const anthropic = new Anthropic({
       apiKey: apiKey,
       baseURL: baseUrl,
+      ...(isMiniMaxRoute ? { defaultHeaders: { 'X-Api-Key': apiKey } } : {}),
     });
 
     const message = await anthropic.messages.create({

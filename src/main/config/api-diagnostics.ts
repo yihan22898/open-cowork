@@ -207,9 +207,21 @@ function makeAnthropicClient(opts: {
   baseUrl: string | undefined;
 }): Anthropic {
   const base = { baseURL: opts.baseUrl, timeout: 15000 };
-  return opts.useAuthToken
-    ? new Anthropic({ ...base, authToken: opts.effectiveKey })
-    : new Anthropic({ ...base, apiKey: opts.effectiveKey });
+  // MiniMax's Anthropic-compatible endpoint authenticates via the
+  // `X-Api-Key` header rather than the standard `Authorization: Bearer`.
+  // Send both so the request is accepted regardless of which the server
+  // prefers.
+  const isMiniMax = (opts.baseUrl ?? '').includes('minimaxi.com');
+  const auth = opts.useAuthToken
+    ? { authToken: opts.effectiveKey }
+    : { apiKey: opts.effectiveKey };
+  return isMiniMax
+    ? new Anthropic({
+        ...base,
+        ...auth,
+        defaultHeaders: { 'X-Api-Key': opts.effectiveKey },
+      })
+    : new Anthropic({ ...base, ...auth });
 }
 
 /**
