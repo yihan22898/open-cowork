@@ -592,6 +592,7 @@ export class DockerBridge implements SandboxExecutor {
     const hostWorkspace = this.config?.workspacePath;
     if (hostWorkspace && hostPath.startsWith(hostWorkspace)) {
       const suffix = hostPath.slice(hostWorkspace.length);
+      if (suffix === '' || suffix === '/') return CONTAINER_WORKSPACE_MOUNT;
       return `${CONTAINER_WORKSPACE_MOUNT}${suffix.startsWith('/') ? '' : '/'}${suffix}`;
     }
     // Anything not under the configured workspace is treated as a
