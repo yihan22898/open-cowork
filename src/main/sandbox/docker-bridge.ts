@@ -588,13 +588,14 @@ export class DockerBridge implements SandboxExecutor {
    */
   private toContainerPath(hostPath: string): string {
     if (!hostPath) return hostPath;
-    if (hostPath.startsWith('/')) return hostPath; // already a container path
 
     const hostWorkspace = this.config?.workspacePath;
     if (hostWorkspace && hostPath.startsWith(hostWorkspace)) {
       const suffix = hostPath.slice(hostWorkspace.length);
       return `${CONTAINER_WORKSPACE_MOUNT}${suffix.startsWith('/') ? '' : '/'}${suffix}`;
     }
+    // Anything not under the configured workspace is treated as a
+    // container-native path (e.g. /tmp, /usr/bin) and returned unchanged.
     return hostPath;
   }
 }
