@@ -132,7 +132,7 @@ export const COMMON_PROVIDER_SETUPS: CommonProviderSetup[] = [
     applyProvider: 'custom',
     recommendedProtocol: 'openai',
     recommendedBaseUrl: 'https://api.minimax.chat/v1',
-    exampleModel: 'MiniMax-M2.5',
+    exampleModel: 'MiniMax-M3',
     matcher: {
       hosts: ['api.minimax.chat'],
       hostContains: ['minimax'],

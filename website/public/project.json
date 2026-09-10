@@ -68,7 +68,7 @@
     {
       "name": "MiniMax",
       "baseUrl": "https://api.minimaxi.com/anthropic",
-      "recommendedModels": ["minimax-m2"]
+      "recommendedModels": ["minimax-m3", "minimax-m2.7-highspeed", "minimax-m2.5-highspeed", "minimax-m2"]
     },
     {
       "name": "Kimi",
