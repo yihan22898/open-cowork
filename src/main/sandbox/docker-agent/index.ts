@@ -340,7 +340,7 @@ rl.on('line', async (line) => {
 
     switch (method) {
       case 'ping':
-        result = await agent['ping']?.() ?? { pong: true };
+        result = { pong: true };
         break;
       case 'shutdown':
         result = await agent.shutdown();

@@ -29,9 +29,6 @@
 import { spawn, exec, execFile, ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { v4 as uuidv4 } from 'uuid';
-import * as path from 'path';
-import * as fs from 'fs';
-import { app } from 'electron';
 import { log, logError } from '../utils/logger';
 import type {
   DockerStatus,
@@ -275,19 +272,9 @@ export class DockerBridge implements SandboxExecutor {
   }
 
   // ===== Agent path resolution =====
-
-  /**
-   * Locate the bundled agent script. In dev we read from `dist-docker-agent/`.
-   * In a packaged AppImage (Linux) we ship it as `extraResources`.
-   */
-  private getAgentScriptPath(): string {
-    const isPackaged = app.isPackaged;
-    if (isPackaged) {
-      return path.join(process.resourcesPath || '', 'docker-agent', 'index.js');
-    }
-    // Dev: dist-electron/main → project root → dist-docker-agent/index.js
-    return path.join(__dirname, '..', '..', 'dist-docker-agent', 'index.js');
-  }
+  // (intentionally unused — kept here as a reference for future host-side
+  // helpers that need to locate the bundled agent script. The current
+  // implementation inlines the agent path via CONTAINER_AGENT_PATH.)
 
   // ===== Initialization =====
 
