@@ -4,9 +4,9 @@
 
 ## ✅ Completed
 
-- **Core**: Stable Windows & macOS installers with build verification
+- **Core**: Stable Windows, macOS & Linux (x64 AppImage) installers with build verification
 - **Security**: Full filesystem sandboxing + path traversal / zip-slip hardening
-- **VM Sandbox**: WSL2 (Windows) and Lima (macOS) VM-level isolation
+- **VM Sandbox**: WSL2 (Windows), Lima (macOS), and Docker/Podman (Linux) VM-level isolation. Falls back to basic path guard when no engine is available.
 - **Skills**: PPTX, DOCX, PDF, XLSX support + custom skill management + hot-reload
 - **MCP Connectors**: Custom connector support (stdio / SSE / Streamable HTTP)
 - **Rich Input**: File upload and image input in chat
@@ -35,7 +35,6 @@
 - **Scheduled Tasks**: Cron-like task scheduling with UI management and persistent execution
 - **Log Management**: Structured logging with rotation, size limits, and user-accessible log viewer improvements
 - **Installation Experience**: Smoother first-run — auto-detect system dependencies, clearer error messages, one-click setup
-- **Linux Support**: First-class Linux builds (currently build-from-source only)
 
 ### Mid-term (v3.5.0+)
 
@@ -51,5 +50,5 @@
 
 ---
 
-_Last updated: 2026-05-01_
+_Last updated: 2026-09-10_
 _Want to contribute? Check our [Contributing Guide](CONTRIBUTING.md) and pick an issue labeled `good first issue`._

@@ -20,7 +20,7 @@ head:
 hero:
   name: Open Cowork
   text: 开源 AI 智能助手桌面应用
-  tagline: Windows & macOS 一键安装。多模型支持、虚拟机沙盒隔离、内置 Skills 技能系统、MCP 集成 — 无需编程。
+  tagline: Windows、macOS 与 Linux 一键安装。多模型支持、虚拟机沙盒隔离、内置 Skills 技能系统、MCP 集成 — 无需编程。
   image:
     src: /logo.png
     alt: Open Cowork Logo
@@ -35,13 +35,13 @@ hero:
 features:
   - icon: 🚀
     title: 一键安装，开箱即用
-    details: 提供 Windows (.exe) 和 macOS (.dmg) 预构建安装包，同时支持 Homebrew 安装。无需终端或编程知识。
+    details: 提供 Windows (.exe)、macOS (.dmg) 与 Linux (.AppImage) 预构建安装包；macOS 额外支持 Homebrew 安装。无需终端或编程知识。
   - icon: 🤖
     title: 灵活多模型支持
     details: 支持 Claude、GPT、Gemini、DeepSeek、智谱 GLM、MiniMax、Kimi 等，兼容所有 OpenAI 格式 API。
   - icon: 🔒
     title: 虚拟机级别安全隔离
-    details: 基于 WSL2 (Windows) 和 Lima (macOS) 的虚拟机隔离，所有命令在安全的 Linux 环境中执行，保障宿主机安全。
+    details: 基于 WSL2 (Windows) 和 Lima (macOS) 的虚拟机隔离，所有命令在安全的 Linux 环境中执行，保障宿主机安全。Linux 默认走基础路径限制；如需更强隔离可在容器中运行 AppImage。
   - icon: 🧰
     title: 内置 Skills 技能系统
     details: 一键生成 PPTX、DOCX、XLSX、PDF 文档。支持自定义技能开发，内置 skill-creator 工具包。
@@ -176,7 +176,7 @@ brew tap OpenCoworkAI/tap
 brew install --cask --no-quarantine open-cowork
 ```
 
-**Windows / macOS** — [前往下载页面 →](https://github.com/OpenCoworkAI/open-cowork/releases)
+**Windows / macOS / Linux** — [前往下载页面 →](https://github.com/OpenCoworkAI/open-cowork/releases)
 
 </div>
 
@@ -188,7 +188,7 @@ brew install --cask --no-quarantine open-cowork
 
 ### Open Cowork 是什么？
 
-Open Cowork 是一款免费开源的 AI 智能助手桌面应用，将 AI 模型（Claude、GPT、Gemini、DeepSeek 等）封装为图形界面，提供 Windows 和 macOS 一键安装包，无需命令行或编程知识。
+Open Cowork 是一款免费开源的 AI 智能助手桌面应用，将 AI 模型（Claude、GPT、Gemini、DeepSeek 等）封装为图形界面，提供 Windows、macOS 和 Linux 一键安装包，无需命令行或编程知识。
 
 </div>
 
@@ -212,7 +212,7 @@ Open Cowork 本身完全免费，采用 MIT 开源协议。你只需为所选 AI
 
 ### 沙盒隔离是怎么工作的？
 
-Open Cowork 使用 WSL2 (Windows) 或 Lima (macOS) 在隔离的 Linux 虚拟机中执行所有 AI 命令。即使 AI 操作失误，你的宿主机文件系统也不会受到影响。
+Open Cowork 使用 WSL2 (Windows) 或 Lima (macOS) 在隔离的 Linux 虚拟机中执行所有 AI 命令。即使 AI 操作失误，你的宿主机文件系统也不会受到影响。Linux 默认仅启用基础路径限制，在容器中运行 AppImage 可获得更强隔离。
 
 </div>
 
@@ -228,7 +228,7 @@ Open Cowork 完全在本地运行，你的文件保留在你的工作区内。�
 
 ### 支持 Linux 吗？
 
-目前提供 Windows 和 macOS 的预构建安装包。Linux 用户可以通过源码编译方式使用，详见 [GitHub 仓库](https://github.com/OpenCoworkAI/open-cowork)。
+支持。Open Cowork 与 Windows、macOS 一同发布 Linux x64 的 `.AppImage` 安装包。请到 [Releases 页面](https://github.com/OpenCoworkAI/open-cowork/releases) 下载最新的 `Open Cowork-<version>-linux-x64.AppImage`，赋予执行权限后双击即可启动。Linux 默认仅启用基础路径限制；如需更强隔离，可在 Docker 或 Podman 中运行 AppImage。
 
 </div>
 

@@ -272,3 +272,127 @@ jobs:
           files: |
             release/*.exe
           draft: true
+
+  build-linux:
+    name: Release Linux
+    needs: [lint-and-test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cache Electron
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
+        with:
+          path: ~/.cache/electron
+          key: electron-linux-${{ hashFiles('package-lock.json') }}
+          restore-keys: electron-linux-
+
+      - name: Install libfuse2 and FUSE libraries for AppImage
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2 libfuse2t64 fuse-utils
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Download Node binaries
+        run: node scripts/download-node.js
+
+      - name: Prepare Python runtime
+        run: node scripts/prepare-python.js
+
+      - name: Build WSL sandbox agent
+        run: npm run build:wsl-agent
+
+      - name: Build Lima sandbox agent
+        run: npm run build:lima-agent
+
+      - name: Build MCP servers
+        run: npm run build:mcp
+
+      - name: TypeScript compile
+        run: npx tsc
+
+      - name: Vite build
+        run: npx vite build
+
+      - name: Electron Builder
+        run: npx electron-builder --linux AppImage --publish never
+
+      # Verify critical resources are present in the packaged app
+      - name: Smoke test - verify packaged resources
+        run: |
+          set -euo pipefail
+          APPIMAGE=$(ls release/*.AppImage | head -1)
+          if [ -z "$APPIMAGE" ]; then
+            echo "::error::No AppImage found in release/"
+            exit 1
+          fi
+          echo "Found AppImage: $APPIMAGE"
+
+          # Extract the AppImage to a temp dir to inspect resources
+          WORKDIR=$(mktemp -d)
+          cd "$WORKDIR"
+          "$GITHUB_WORKSPACE/$APPIMAGE" --appimage-extract > /dev/null
+
+          SQUASHFS_ROOT="$WORKDIR/squashfs-root"
+          RESOURCES="$SQUASHFS_ROOT/resources"
+
+          FAILED=0
+          for check in \
+            "mcp/gui-operate-server.js" \
+            "mcp/software-dev-server-example.js" \
+            "node/bin/node" \
+            "skills"; do
+            if [ -e "$RESOURCES/$check" ]; then
+              echo "  OK: $check"
+            else
+              echo "::error::Missing resource: $check"
+              FAILED=1
+            fi
+          done
+
+          cd "$GITHUB_WORKSPACE"
+          rm -rf "$WORKDIR"
+
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::Packaged app is missing critical resources"
+            exit 1
+          fi
+          echo "All packaged resources verified."
+
+      - name: Smoke test - launch app
+        run: |
+          set -euo pipefail
+          APPIMAGE=$(ls release/*.AppImage | head -1)
+          if [ -z "$APPIMAGE" ]; then
+            echo "::error::No AppImage found in release/"
+            exit 1
+          fi
+
+          # AppImages require libfuse2 (installed above). Run with xvfb-run for headless CI.
+          chmod +x "$APPIMAGE"
+
+          set +e
+          xvfb-run -a "$APPIMAGE" --smoke-test 2>&1
+          EXIT_CODE=$?
+          set -e
+
+          if [ "$EXIT_CODE" -eq 0 ]; then
+            echo "Launch smoke test passed"
+          else
+            echo "::error::Launch smoke test failed with exit code $EXIT_CODE"
+            exit 1
+          fi
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v2
+        with:
+          files: |
+            release/*.AppImage
+          draft: true

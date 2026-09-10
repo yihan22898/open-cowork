@@ -15,6 +15,7 @@ import { dialog, BrowserWindow } from 'electron';
 import { log, logWarn, logError } from '../utils/logger';
 import { WSLBridge, pathConverter } from './wsl-bridge';
 import { LimaBridge, limaPathConverter } from './lima-bridge';
+import { DockerBridge, getDockerBridge } from './docker-bridge';
 import { NativeExecutor } from './native-executor';
 import { getSandboxBootstrap } from './sandbox-bootstrap';
 import { configStore } from '../config/config-store';
@@ -25,10 +26,11 @@ import type {
   DirectoryEntry,
   WSLStatus,
   LimaStatus,
+  DockerStatus,
   PathConverter,
 } from './types';
 
-export type SandboxMode = 'wsl' | 'lima' | 'native' | 'none';
+export type SandboxMode = 'wsl' | 'lima' | 'docker' | 'native' | 'none';
 
 export interface SandboxAdapterConfig extends SandboxConfig {
   /** Force native execution even on Windows (not recommended) */
@@ -43,6 +45,7 @@ interface SandboxState {
   mode: SandboxMode;
   wslStatus?: WSLStatus;
   limaStatus?: LimaStatus;
+  dockerStatus?: DockerStatus;
   initialized: boolean;
   workspacePath: string;
 }
@@ -111,6 +114,13 @@ export class SandboxAdapter implements SandboxExecutor {
   }
 
   /**
+   * Get Docker status (if applicable)
+   */
+  get dockerStatus(): DockerStatus | undefined {
+    return this.state.dockerStatus;
+  }
+
+  /**
    * Initialize the sandbox adapter
    */
   async initialize(config: SandboxAdapterConfig): Promise<void> {
@@ -146,8 +156,11 @@ export class SandboxAdapter implements SandboxExecutor {
     } else if (platform === 'darwin' && !config.forceNative) {
       // macOS: Try to use Lima
       await this.initializeLima(config);
+    } else if (platform === 'linux' && !config.forceNative) {
+      // Linux: Try to use Docker/Podman
+      await this.initializeDocker(config);
     } else {
-      // Linux or force native: Use native execution
+      // Fallback: Use native execution
       await this.initializeNative(config);
     }
 
@@ -301,6 +314,64 @@ export class SandboxAdapter implements SandboxExecutor {
     } catch (error) {
       logError('[SandboxAdapter] Failed to initialize Lima bridge:', error);
       await this.showLimaInitFailedWarning(config, error);
+      await this.initializeNative(config);
+    }
+  }
+
+  /**
+   * Initialize Docker-based sandbox (Linux)
+   */
+  private async initializeDocker(config: SandboxAdapterConfig): Promise<void> {
+    log('[SandboxAdapter] Checking Docker/Podman availability...');
+
+    const bootstrap = getSandboxBootstrap();
+    let dockerStatus = bootstrap.getCachedDockerStatus();
+
+    if (dockerStatus) {
+      log('[SandboxAdapter] Using cached Docker status from bootstrap');
+    } else {
+      log('[SandboxAdapter] No cached status, checking Docker...');
+      dockerStatus = await DockerBridge.checkDockerStatus();
+    }
+
+    this.state.dockerStatus = dockerStatus;
+
+    log('[SandboxAdapter] Docker Status:', JSON.stringify(dockerStatus, null, 2));
+
+    if (!dockerStatus.available) {
+      log('[SandboxAdapter] [X] Docker/Podman not available');
+      await this.showDockerNotAvailableWarning(config);
+      await this.initializeNative(config);
+      return;
+    }
+
+    log('[SandboxAdapter] [OK] Docker detected');
+    log('[SandboxAdapter]   Engine:', dockerStatus.engine);
+    log('[SandboxAdapter]   Version:', dockerStatus.version);
+    log(
+      '[SandboxAdapter]   Image:',
+      dockerStatus.imageAvailable ? '[OK] cached' : '[!] will pull on first run'
+    );
+    log(
+      '[SandboxAdapter]   Container:',
+      dockerStatus.containerRunning
+        ? '[OK] running'
+        : `[!] ${dockerStatus.containerExists ? 'stopped' : 'not yet created'}`
+    );
+
+    try {
+      const dockerBridge = getDockerBridge();
+      await dockerBridge.initialize(config);
+
+      this.executor = dockerBridge;
+      this.state.mode = 'docker';
+      log('[SandboxAdapter] [OK] Docker sandbox initialized successfully');
+      log('[SandboxAdapter] =============================================');
+      log('[SandboxAdapter] SANDBOX MODE: Docker (Isolated Container Environment)');
+      log('[SandboxAdapter] =============================================');
+    } catch (error) {
+      logError('[SandboxAdapter] Failed to initialize Docker bridge:', error);
+      await this.showDockerInitFailedWarning(config, error);
       await this.initializeNative(config);
     }
   }
@@ -498,6 +569,49 @@ export class SandboxAdapter implements SandboxExecutor {
       detail:
         `Error: ${errorMessage}\n\n` +
         'Commands will be executed directly on macOS without sandbox isolation.',
+      buttons: ['OK'],
+    });
+  }
+
+  private async showDockerNotAvailableWarning(config: SandboxAdapterConfig): Promise<void> {
+    if (!config.mainWindow) {
+      logWarn('[SandboxAdapter] Docker not available, no window to show dialog');
+      return;
+    }
+
+    await dialog.showMessageBox(config.mainWindow, {
+      type: 'warning',
+      title: 'Docker Not Available',
+      message: 'Docker (or Podman) is not installed or not running on this system.',
+      detail:
+        'For better security on Linux, we recommend installing Docker. ' +
+        'Commands will be executed directly on the host without sandbox isolation.\n\n' +
+        'To install Docker, run:\n' +
+        'curl -fsSL https://get.docker.com | sh\n\n' +
+        'After installing, make sure the daemon is running (sudo systemctl start docker) ' +
+        'and that your user has permission to use Docker (add to the docker group).',
+      buttons: ['Continue Anyway'],
+    });
+  }
+
+  private async showDockerInitFailedWarning(
+    config: SandboxAdapterConfig,
+    error: unknown
+  ): Promise<void> {
+    if (!config.mainWindow) {
+      logWarn('[SandboxAdapter] Docker init failed, no window to show dialog');
+      return;
+    }
+
+    const errorMessage = error instanceof Error ? error.message : String(error);
+
+    await dialog.showMessageBox(config.mainWindow, {
+      type: 'warning',
+      title: 'Docker Sandbox Initialization Failed',
+      message: 'Failed to initialize the Docker sandbox.',
+      detail:
+        `Error: ${errorMessage}\n\n` +
+        'Commands will be executed directly on Linux without sandbox isolation.',
       buttons: ['OK'],
     });
   }
@@ -703,6 +817,13 @@ export class SandboxAdapter implements SandboxExecutor {
 
     if (this.state.mode === 'lima' && this.executor instanceof LimaBridge) {
       return (this.executor as LimaBridge).runClaudeCode(prompt, options);
+    }
+
+    if (this.state.mode === 'docker' && this.executor instanceof DockerBridge) {
+      // DockerBridge does not expose runClaudeCode yet. The bridge contract is
+      // symmetrical with WSL/Lima; once the agent learns to host claude-code
+      // (PR forthcoming) this branch will become a real call.
+      throw new Error('Claude Code execution in Docker mode is not yet implemented');
     }
 
     // For native mode, we need to spawn claude-code directly

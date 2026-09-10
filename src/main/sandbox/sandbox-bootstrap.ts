@@ -9,8 +9,9 @@
 import { log, logError } from '../utils/logger';
 import { WSLBridge } from './wsl-bridge';
 import { LimaBridge } from './lima-bridge';
+import { DockerBridge } from './docker-bridge';
 import { configStore } from '../config/config-store';
-import type { WSLStatus, LimaStatus } from './types';
+import type { WSLStatus, LimaStatus, DockerStatus } from './types';
 
 export type SandboxSetupPhase =
   | 'checking' // Checking WSL/Lima availability
@@ -33,9 +34,10 @@ export interface SandboxSetupProgress {
 }
 
 export interface SandboxBootstrapResult {
-  mode: 'wsl' | 'lima' | 'native';
+  mode: 'wsl' | 'lima' | 'docker' | 'native';
   wslStatus?: WSLStatus;
   limaStatus?: LimaStatus;
+  dockerStatus?: DockerStatus;
   error?: string;
 }
 
@@ -55,6 +57,7 @@ export class SandboxBootstrap {
   // Cached status for quick access by SandboxAdapter
   private cachedWSLStatus: WSLStatus | null = null;
   private cachedLimaStatus: LimaStatus | null = null;
+  private cachedDockerStatus: DockerStatus | null = null;
 
   static getInstance(): SandboxBootstrap {
     if (!SandboxBootstrap.instance) {
@@ -75,6 +78,13 @@ export class SandboxBootstrap {
    */
   getCachedLimaStatus(): LimaStatus | null {
     return this.cachedLimaStatus;
+  }
+
+  /**
+   * Get cached Docker status (available after bootstrap completes)
+   */
+  getCachedDockerStatus(): DockerStatus | null {
+    return this.cachedDockerStatus;
   }
 
   /**
@@ -109,6 +119,7 @@ export class SandboxBootstrap {
     this.result = null;
     this.cachedWSLStatus = null;
     this.cachedLimaStatus = null;
+    this.cachedDockerStatus = null;
   }
 
   /**
@@ -157,12 +168,14 @@ export class SandboxBootstrap {
         return await this.bootstrapWSL();
       } else if (platform === 'darwin') {
         return await this.bootstrapLima();
+      } else if (platform === 'linux') {
+        return await this.bootstrapDocker();
       } else {
-        // Linux - native mode
+        // Unknown platform - native mode
         this.reportProgress({
           phase: 'skipped',
           message: 'Using native execution mode',
-          detail: 'Linux runs commands directly',
+          detail: 'Unknown platform runs commands directly',
           progress: 100,
         });
         return { mode: 'native' };
@@ -425,6 +438,78 @@ export class SandboxBootstrap {
     });
 
     return { mode: 'lima', limaStatus };
+  }
+
+  /**
+   * Bootstrap Docker/Podman on Linux.
+   *
+   * Unlike WSL/Lima, Docker has no "install dependencies" step the first time
+   * round — dependencies are baked into the image. We only need to:
+   *   1. Probe the engine and confirm the daemon is reachable.
+   *   2. `docker pull` the sandbox image if it isn't cached locally
+   *      (this is a large download the first time).
+   */
+  private async bootstrapDocker(): Promise<SandboxBootstrapResult> {
+    // Phase 1: Detect engine
+    this.reportProgress({
+      phase: 'checking',
+      message: 'Checking Docker/Podman availability...',
+      progress: 10,
+    });
+
+    let dockerStatus = await DockerBridge.checkDockerStatus();
+    this.cachedDockerStatus = dockerStatus;
+
+    if (!dockerStatus.available) {
+      this.reportProgress({
+        phase: 'skipped',
+        message: 'Docker/Podman not detected, using native mode',
+        detail: 'Install Docker or Podman for stronger sandbox isolation',
+        progress: 100,
+      });
+      return { mode: 'native', dockerStatus };
+    }
+
+    log(
+      `[SandboxBootstrap] Docker detected (engine: ${dockerStatus.engine}, version: ${dockerStatus.version})`
+    );
+
+    // Phase 2: Pull image if missing (this is the slow step on first run)
+    if (!dockerStatus.imageAvailable) {
+      this.reportProgress({
+        phase: 'installing_deps',
+        message: 'Pulling Open Cowork sandbox image...',
+        detail: 'First run downloads ~200MB from Docker Hub — may take a few minutes',
+        progress: 50,
+      });
+
+      const pulled = await DockerBridge.ensureImage(dockerStatus.engine!);
+      if (!pulled) {
+        this.reportProgress({
+          phase: 'error',
+          message: 'Failed to pull sandbox image',
+          error: 'Docker pull failed',
+        });
+        return {
+          mode: 'native',
+          dockerStatus,
+          error: 'Image pull failed',
+        };
+      }
+
+      // Re-check after pull
+      dockerStatus = await DockerBridge.checkDockerStatus();
+      this.cachedDockerStatus = dockerStatus;
+    }
+
+    this.reportProgress({
+      phase: 'ready',
+      message: 'Docker sandbox ready',
+      detail: `${dockerStatus.engine ?? 'docker'} - image cached`,
+      progress: 100,
+    });
+
+    return { mode: 'docker', dockerStatus };
   }
 }
 

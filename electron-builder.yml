@@ -132,6 +132,8 @@ linux:
       to: node/lib/node_modules/npm
     - from: resources/python/linux-${arch}
       to: python
+    - from: dist-docker-agent
+      to: docker-agent
     - from: .claude/skills
       to: skills
 

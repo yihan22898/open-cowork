@@ -20,7 +20,7 @@ head:
 hero:
   name: Open Cowork
   text: Open-Source AI Agent Desktop App
-  tagline: One-click install for Windows & macOS. Multi-model support, VM sandbox isolation, built-in Skills, and MCP integration — no coding required.
+  tagline: One-click install for Windows, macOS & Linux. Multi-model support, VM sandbox isolation, built-in Skills, and MCP integration — no coding required.
   image:
     src: /logo.png
     alt: Open Cowork Logo
@@ -35,13 +35,13 @@ hero:
 features:
   - icon: 🚀
     title: One-Click Install
-    details: Pre-built installers for Windows (.exe) and macOS (.dmg). Also available via Homebrew. No terminal or coding knowledge required.
+    details: Pre-built installers for Windows (.exe), macOS (.dmg), and Linux (.AppImage). macOS also available via Homebrew. No terminal or coding knowledge required.
   - icon: 🤖
     title: Multi-Model Support
     details: Works with Claude, GPT, Gemini, DeepSeek, GLM, MiniMax, Kimi, and any OpenAI-compatible API. Bring your own API key.
   - icon: 🔒
     title: VM Sandbox Isolation
-    details: WSL2 (Windows) and Lima (macOS) powered VM isolation. All commands execute in a secure Linux environment, protecting your host system.
+    details: WSL2 (Windows) and Lima (macOS) powered VM isolation. All commands execute in a secure Linux environment, protecting your host system. Linux uses basic path-based sandboxing by default; run the AppImage in a container for stronger isolation.
   - icon: 🧰
     title: Built-in Skills
     details: Generate PPTX, DOCX, XLSX, and PDF documents with built-in workflows. Create custom skills with the skill-creator toolkit.
@@ -139,7 +139,7 @@ brew tap OpenCoworkAI/tap
 brew install --cask --no-quarantine open-cowork
 ```
 
-**Windows / macOS** — [Download from Releases →](https://github.com/OpenCoworkAI/open-cowork/releases)
+**Windows / macOS / Linux** — [Download from Releases →](https://github.com/OpenCoworkAI/open-cowork/releases)
 
 </div>
 
@@ -151,7 +151,7 @@ brew install --cask --no-quarantine open-cowork
 
 ### What is Open Cowork?
 
-Open Cowork is a free, open-source AI agent desktop application for Windows and macOS. It wraps AI models (Claude, GPT, Gemini, DeepSeek, etc.) into a user-friendly GUI with one-click installation — no terminal or coding knowledge required.
+Open Cowork is a free, open-source AI agent desktop application for Windows, macOS, and Linux. It wraps AI models (Claude, GPT, Gemini, DeepSeek, etc.) into a user-friendly GUI with one-click installation — no terminal or coding knowledge required.
 
 </div>
 
@@ -175,7 +175,7 @@ Yes. Open Cowork is completely free and open-source under the MIT license. You o
 
 ### How does sandbox isolation work?
 
-Open Cowork uses WSL2 (Windows) or Lima (macOS) to run all AI-executed commands inside an isolated Linux VM. Even if the AI makes a mistake, your host system files remain protected.
+Open Cowork uses WSL2 (Windows) or Lima (macOS) to run all AI-executed commands inside an isolated Linux VM. Even if the AI makes a mistake, your host system files remain protected. Linux falls back to basic path-based sandboxing; running the AppImage inside a container provides stronger isolation.
 
 </div>
 
@@ -191,7 +191,7 @@ Open Cowork runs entirely on your local machine. The only external communication
 
 ### Does it work on Linux?
 
-Pre-built installers are available for Windows and macOS. Linux users can build from source — see the [GitHub repository](https://github.com/OpenCoworkAI/open-cowork) for instructions.
+Yes — pre-built `.AppImage` binaries for Linux x64 ship alongside the Windows `.exe` and macOS `.dmg`. Download the latest `Open Cowork-<version>-linux-x64.AppImage` from the [Releases page](https://github.com/OpenCoworkAI/open-cowork/releases), run `chmod +x` on it, and double-click to launch. Linux uses basic path-based sandboxing by default; run the AppImage inside Docker or Podman for stronger isolation.
 
 </div>
 

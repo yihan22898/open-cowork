@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS-blue" alt="Platform" />
+  <img src="https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/License-MIT-green" alt="License" />
   <img src="https://img.shields.io/badge/Node.js-18+-brightgreen" alt="Node.js" />
   <a href="https://discord.gg/pynjtQDf"><img src="https://img.shields.io/discord/1493588403260883078?logo=discord&label=Discord&color=5865F2" alt="Discord" /></a>
@@ -27,13 +27,13 @@
 
 ---
 
-Open Cowork is a free, open-source AI agent desktop application for Windows and macOS. It wraps Claude Code, OpenAI, Gemini, DeepSeek, and other AI models into a user-friendly GUI with one-click installation — no coding required. Key capabilities include VM-level sandbox isolation (WSL2 on Windows, Lima on macOS), a built-in Skills system for generating PPTX, DOCX, XLSX, and PDF documents, MCP (Model Context Protocol) integration for connecting to browsers, Notion, and other desktop apps, GUI automation via computer use, and remote control through Feishu (Lark) and Slack. Open Cowork is the open-source implementation of Claude Cowork, designed to make AI-powered desktop automation accessible to everyone.
+Open Cowork is a free, open-source AI agent desktop application for Windows, macOS, and Linux (x64). It wraps Claude Code, OpenAI, Gemini, DeepSeek, and other AI models into a user-friendly GUI with one-click installation — no coding required. Key capabilities include VM-level sandbox isolation (WSL2 on Windows, Lima on macOS), a built-in Skills system for generating PPTX, DOCX, XLSX, and PDF documents, MCP (Model Context Protocol) integration for connecting to browsers, Notion, and other desktop apps, GUI automation via computer use, and remote control through Feishu (Lark) and Slack. Open Cowork is the open-source implementation of Claude Cowork, designed to make AI-powered desktop automation accessible to everyone.
 
 ---
 
 ## 📖 Introduction
 
-**Open Cowork** is an open-source implementation of **Claude Cowork**, with one-click installers for **Windows** and **macOS**—no coding required.
+**Open Cowork** is an open-source implementation of **Claude Cowork**, with one-click installers for **Windows**, **macOS**, and **Linux**—no coding required.
 
 It provides a sandboxed workspace where AI can manage files, generate professional outputs (PPTX, DOCX, XLSX, etc.) through our built-in **Skills** system, and **connect to desktop apps via MCP** (browser, Notion, etc.) for better collaboration.
 
@@ -110,10 +110,11 @@ brew install --cask --no-quarantine open-cowork
 
 Get the latest version from our [Releases Page](https://github.com/OpenCoworkAI/open-cowork/releases).
 
-| Platform                  | File Type |
+| Platform                  | File Type  |
 | ------------------------- | --------- |
-| **Windows**               | `.exe`    |
-| **macOS** (Apple Silicon) | `.dmg`    |
+| **Windows**               | `.exe`     |
+| **macOS** (Apple Silicon) | `.dmg`     |
+| **Linux** (x64)           | `.AppImage` |
 
 ### Option 3: Build from Source
 
@@ -138,10 +139,12 @@ Open Cowork provides **multi-level sandbox protection** to keep your system safe
 | **Basic**    | All      | Path Guard | File operations restricted to workspace folder |
 | **Enhanced** | Windows  | WSL2       | Commands execute in isolated Linux VM          |
 | **Enhanced** | macOS    | Lima       | Commands execute in isolated Linux VM          |
+| **Enhanced** | Linux    | Docker / Podman | Commands execute inside an isolated Linux container |
 
 - **Windows (WSL2)**: When WSL2 is detected, all Bash commands are automatically routed to a Linux VM. The workspace is synced bidirectionally.
 - **macOS (Lima)**: When [Lima](https://lima-vm.io/) is installed (`brew install lima`), commands run in an Ubuntu VM with `/Users` mounted.
-- **Fallback**: If no VM is available, commands run natively with path-based restrictions.
+- **Linux (Docker / Podman)**: When Docker (or Podman) is detected, Open Cowork pulls `opencowork/sandbox:latest` from Docker Hub and runs all commands inside an isolated container. The workspace is bind-mounted at `/workspace` with `--cap-drop ALL` and `--security-opt no-new-privileges` for hard isolation.
+- **Fallback**: If no VM/container is available, commands run natively with path-based restrictions.
 
 **Setup (Optional, Recommended)**
 
@@ -153,6 +156,24 @@ Open Cowork provides **multi-level sandbox protection** to keep your system safe
 ```bash
 brew install lima
 # Open Cowork will automatically create and manage a Lima VM (internal Lima name: 'claude-sandbox')
+```
+
+- **Linux (Ubuntu 22.04+ / Debian 12+ recommended)**:
+  Download the `.AppImage` from Releases, then:
+
+```bash
+chmod +x "Open Cowork-<version>-linux-x64.AppImage"
+./"Open Cowork-<version>-linux-x64.AppImage"   # double-click also works in most file managers
+```
+
+  Required libraries (already present on most modern distros): `libfuse2`, `libgtk-3-0`, `libnss3`, `libxss1`, `libasound2`. If AppImage fails to start, see the [AppImage troubleshooting docs](https://docs.appimage.org/user-guide/troubleshooting.html).
+
+  **Recommended for sandbox isolation**: install Docker (or Podman). Open Cowork will auto-detect the engine at startup, pull the `opencowork/sandbox:latest` image from Docker Hub, and run all AI-executed commands inside the container. Without Docker, Linux falls back to basic path-based sandboxing.
+
+```bash
+# Optional but recommended (Ubuntu)
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER   # log out / log back in for group change
 ```
 
 ---
@@ -278,16 +299,16 @@ open-cowork/
 
 See our full **[ROADMAP.md](ROADMAP.md)** for detailed plans.
 
-**Completed:** Core installers · Filesystem sandboxing · VM isolation (WSL2/Lima) · Skills (PPTX/DOCX/PDF/XLSX) · MCP connectors · Multi-model support · Rich input · i18n
+**Completed:** Core installers (Windows / macOS / Linux) · Filesystem sandboxing · VM/container isolation (WSL2 / Lima / Docker) · Skills (PPTX/DOCX/PDF/XLSX) · MCP connectors · Multi-model support · Rich input · i18n
 
-**Coming next:** Memory optimization · Linux support · Plugin system · Computer use · Stable release
+**Coming next:** Memory optimization · Plugin system · Computer use · Stable release
 
 ---
 
 ## ❓ FAQ
 
 **What is Open Cowork?**
-Open Cowork is a free, open-source desktop application that provides a local AI agent workspace. It wraps AI models (Claude, GPT, Gemini, DeepSeek, etc.) into a GUI with one-click installers for Windows and macOS — no terminal or coding knowledge required.
+Open Cowork is a free, open-source desktop application that provides a local AI agent workspace. It wraps AI models (Claude, GPT, Gemini, DeepSeek, etc.) into a GUI with one-click installers for Windows, macOS, and Linux — no terminal or coding knowledge required.
 
 **How is Open Cowork different from Claude Cowork?**
 Open Cowork is the open-source implementation of Claude Cowork. It adds multi-model support (not just Claude), GUI automation via computer use, remote control through Feishu/Slack, and VM-level sandbox isolation. See the [feature comparison table](#features) for details.
@@ -299,7 +320,7 @@ Claude (via Anthropic or OpenRouter), OpenAI-compatible APIs, and Chinese models
 Yes. Open Cowork itself is completely free and open-source under the MIT license. You only need to pay for the AI model API usage from your chosen provider.
 
 **Does Open Cowork work on Linux?**
-Currently, Open Cowork provides pre-built installers for Windows and macOS only. Linux users can build from source — see the [Build from Source](#installation) section.
+Yes — Open Cowork ships a Linux `.AppImage` for x64 systems, alongside the Windows `.exe` and macOS `.dmg`. Download the latest `Open Cowork-<version>-linux-x64.AppImage` from the [Releases Page](https://github.com/OpenCoworkAI/open-cowork/releases), make it executable (`chmod +x Open\ Cowork-*.AppImage`), and run it. For VM-level sandbox isolation, install Docker (or Podman) — Open Cowork auto-detects it and runs all commands inside the `opencowork/sandbox:latest` container.
 
 **How does sandbox isolation work?**
 Open Cowork offers multi-level protection: basic path-based restrictions on all platforms, and enhanced VM-level isolation using WSL2 (Windows) or Lima (macOS). When a VM is available, all commands execute inside an isolated Linux environment, protecting your host system.

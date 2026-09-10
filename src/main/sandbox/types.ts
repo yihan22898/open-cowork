@@ -64,6 +64,17 @@ export interface LimaStatus {
   pythonVersion?: string;
 }
 
+export interface DockerStatus {
+  available: boolean;
+  engine?: 'docker' | 'podman';
+  version?: string;
+  containerExists?: boolean;
+  containerRunning?: boolean;
+  containerName?: string;
+  imageAvailable?: boolean;
+  imageName?: string;
+}
+
 export interface SandboxExecutor {
   initialize(config: SandboxConfig): Promise<void>;
   executeCommand(command: string, cwd?: string, env?: Record<string, string>): Promise<ExecutionResult>;

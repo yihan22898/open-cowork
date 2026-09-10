@@ -18,7 +18,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/平台-Windows%20%7C%20macOS-blue" alt="Platform" />
+  <img src="https://img.shields.io/badge/平台-Windows%20%7C%20macOS%20%7C%20Linux-blue" alt="Platform" />
   <img src="https://img.shields.io/badge/协议-MIT-green" alt="License" />
   <img src="https://img.shields.io/badge/Node.js-18+-brightgreen" alt="Node.js" />
   <a href="https://discord.gg/pynjtQDf"><img src="https://img.shields.io/discord/1493588403260883078?logo=discord&label=Discord&color=5865F2" alt="Discord" /></a>
@@ -27,13 +27,13 @@
 
 ---
 
-Open Cowork 是一款免费开源的 AI 智能助手桌面应用，支持 Windows 和 macOS 一键安装，无需任何编程知识。它将 Claude Code、OpenAI、Gemini、DeepSeek 等多种 AI 模型封装为友好的图形界面，提供虚拟机级别的沙盒隔离（Windows 使用 WSL2，macOS 使用 Lima）、内置 Skills 技能系统（可生成 PPTX、DOCX、XLSX、PDF 文档）、MCP 协议集成（连接浏览器、Notion 等桌面应用）、GUI 自动化操作，以及通过飞书和 Slack 进行远程控制。Open Cowork 是 Claude Cowork 的开源实现，让每个人都能轻松使用 AI 驱动的桌面自动化。
+Open Cowork 是一款免费开源的 AI 智能助手桌面应用，支持 Windows、macOS、Linux 一键安装，无需任何编程知识。它将 Claude Code、OpenAI、Gemini、DeepSeek 等多种 AI 模型封装为友好的图形界面，提供虚拟机级别的沙盒隔离（Windows 使用 WSL2，macOS 使用 Lima）、内置 Skills 技能系统（可生成 PPTX、DOCX、XLSX、PDF 文档）、MCP 协议集成（连接浏览器、Notion 等桌面应用）、GUI 自动化操作，以及通过飞书和 Slack 进行远程控制。Open Cowork 是 Claude Cowork 的开源实现，让每个人都能轻松使用 AI 驱动的桌面自动化。
 
 ---
 
 ## 📖 简介
 
-**Open Cowork** 是 **Claude Cowork** 的开源实现，提供 **Windows** 和 **macOS** 一键安装包，无需任何编程知识。
+**Open Cowork** 是 **Claude Cowork** 的开源实现，提供 **Windows**、**macOS** 与 **Linux** 一键安装包，无需任何编程知识。
 
 它为 AI 提供了一个沙盒化的工作环境，可以管理文件、通过内置的 **Skills** 系统生成专业文件（PPTX、DOCX、XLSX等）和 **通过MCP链接桌面APP**（浏览器、Notion等）进行人机协作等等。
 
@@ -52,7 +52,7 @@ Open Cowork 是一款免费开源的 AI 智能助手桌面应用，支持 Window
 | OpenClaw      | ✓            | ✓        | ✗            |
 | OpenCowork    | ✓            | ✓        | ✓            |
 
-- **一键安装，开箱即用**：提供 Windows 和 macOS 预构建安装包，无需配置环境，下载即可开始使用。。
+- **一键安装，开箱即用**：提供 Windows、macOS 与 Linux 预构建安装包，无需配置环境，下载即可开始使用。
 - **灵活模型支持**：支持 **Claude**、**OpenAI 兼容接口**，以及国产大模型 **GLM**、**MiniMax**、**Kimi** 等。使用你的 OpenRouter、Anthropic等API Key，灵活配置。更多模型持续接入中！
 - **远程控制**：可以接入**飞书**等协作平台和远程服务，实现工作流自动化和跨平台操作。
 - **图形界面操作**：可以控制和操作电脑上的各种桌面 GUI 应用程序。**推荐使用 Gemini-3-Pro 模型**以获得最佳的 GUI 理解和控制效果。
@@ -62,7 +62,7 @@ Open Cowork 是一款免费开源的 AI 智能助手桌面应用，支持 Window
 - **多模态交互输入**：支持直接拖拽文件和图片到输入框，实现无缝的多模态交互。
 - **实时追踪**：在 Trace Panel 中观察 AI 推理和工具调用过程。
 - **安全可控的工作环境**：所有操作限制在你选择的工作区文件夹内。
-- **虚拟机级别安全隔离**：基于 WSL2 (Windows) 和 Lima (macOS) 的虚拟机隔离，所有命令在隔离的虚拟机中执行，保障宿主机安全。
+- **虚拟机级别安全隔离**：基于 WSL2 (Windows) 和 Lima (macOS) 的虚拟机隔离，所有命令在隔离的虚拟机中执行，保障宿主机安全。Linux 默认走基础路径限制。
 - **UI优化**：灵活优美的UI设计、切换系统语言、完善的MCP/Skills/Tools调用展示。
 
 <a id="演示"></a>
@@ -102,10 +102,11 @@ brew install --cask --no-quarantine open-cowork
 
 请访问我们的 [Release 页面](https://github.com/OpenCoworkAI/open-cowork/releases) 下载最新版本。
 
-| 平台                      | 文件类型 |
+| 平台                       | 文件类型   |
 | ------------------------- | -------- |
-| **Windows**               | `.exe`   |
-| **macOS** (Apple Silicon) | `.dmg`   |
+| **Windows**               | `.exe`    |
+| **macOS** (Apple Silicon) | `.dmg`    |
+| **Linux** (x64)           | `.AppImage` |
 
 ### 方式三：源码编译
 
@@ -130,10 +131,12 @@ Open Cowork 提供**多级沙盒保护**，确保系统安全：
 | **基础** | 全平台  | 路径守卫 | 文件操作限制在工作区文件夹内    |
 | **增强** | Windows | WSL2     | 命令在隔离的 Linux 虚拟机中执行 |
 | **增强** | macOS   | Lima     | 命令在隔离的 Linux 虚拟机中执行 |
+| **增强** | Linux   | Docker / Podman | 命令在隔离的 Linux 容器中执行 |
 
 - **Windows (WSL2)**：检测到 WSL2 后，所有 Bash 命令自动路由到 Linux 虚拟机，工作区双向同步。
 - **macOS (Lima)**：安装 [Lima](https://lima-vm.io/) (`brew install lima`) 后，命令在挂载了 `/Users` 的 Ubuntu 虚拟机中运行。
-- **回退模式**：如果没有可用的虚拟机，命令将在本机执行，受路径限制保护。
+- **Linux (Docker / Podman)**：检测到 Docker 或 Podman 后，Open Cowork 从 Docker Hub 拉取 `opencowork/sandbox:latest` 镜像并把所有命令放进隔离容器里执行。工作区通过 `--cap-drop ALL` 与 `--security-opt no-new-privileges` 挂载到 `/workspace`，隔离强度等同于独立 Linux 虚拟机。
+- **回退模式**：如果没有可用的虚拟机/容器，命令将在本机执行，受路径限制保护。
 
 **配置方法（可选、推荐）**
 
@@ -269,16 +272,16 @@ open-cowork/
 
 详见 **[ROADMAP.md](ROADMAP.md)**。
 
-**已完成：** 安装包 · 文件系统沙盒 · VM 隔离 (WSL2/Lima) · 技能 (PPTX/DOCX/PDF/XLSX) · MCP 连接器 · 多模型支持 · 富文本输入 · 中英文界面
+**已完成：** 安装程序（Windows / macOS / Linux）· 文件系统沙盒 · 虚拟机隔离（WSL2 / Lima）· 技能系统（PPTX / DOCX / PDF / XLSX）· MCP 连接器 · 多模型支持 · 富输入 · 国际化
 
-**即将推出：** 记忆优化 · Linux 支持 · 插件系统 · Computer Use · 正式版发布
+**即将推出：** 记忆优化 · 插件系统 · Computer Use · 正式版发布
 
 ---
 
 ## ❓ 常见问题
 
 **Open Cowork 是什么？**
-Open Cowork 是一款免费开源的桌面应用，为用户提供本地 AI 智能助手工作空间。它将 AI 模型（Claude、GPT、Gemini、DeepSeek 等）封装为图形界面，提供 Windows 和 macOS 一键安装包，无需命令行或编程知识。
+Open Cowork 是一款免费开源的桌面应用，为用户提供本地 AI 智能助手工作空间。它将 AI 模型（Claude、GPT、Gemini、DeepSeek 等）封装为图形界面，提供 Windows、macOS 和 Linux 一键安装包，无需命令行或编程知识。
 
 **Open Cowork 和 Claude Cowork 有什么区别？**
 Open Cowork 是 Claude Cowork 的开源实现，在此基础上增加了多模型支持（不只是 Claude）、GUI 自动化操作、飞书/Slack 远程控制，以及虚拟机级别的沙盒隔离。详见[功能对比表](#核心特性)。
@@ -290,10 +293,10 @@ Open Cowork 是 Claude Cowork 的开源实现，在此基础上增加了多模�
 是的。Open Cowork 本身完全免费，采用 MIT 开源协议。你只需为所选 AI 模型服务商的 API 调用付费。
 
 **支持 Linux 吗？**
-目前提供 Windows 和 macOS 的预构建安装包。Linux 用户可以通过源码编译方式使用，详见[源码编译](#下载与安装)章节。
+支持。Open Cowork 提供 Linux x64 的 `.AppImage` 安装包，与 Windows `.exe` 和 macOS `.dmg` 一同发布。请到 [Releases 页面](https://github.com/OpenCoworkAI/open-cowork/releases) 下载最新的 `Open Cowork-<version>-linux-x64.AppImage`，添加执行权限（`chmod +x Open\ Cowork-*.AppImage`）后即可运行。Linux 上默认仅启用基础路径守卫沙盒，若需要更强隔离，可将 AppImage 运行在容器内。
 
 **沙盒隔离是怎么工作的？**
-Open Cowork 提供多级安全保护：所有平台均有基础的路径限制，Windows 和 macOS 还支持虚拟机级别隔离（分别使用 WSL2 和 Lima）。启用虚拟机后，所有命令在隔离的 Linux 环境中执行，保护你的宿主机系统安全。
+Open Cowork 提供多级安全保护：所有平台均有基础的路径限制，Windows 和 macOS 还支持虚拟机级别隔离（分别使用 WSL2 和 Lima）。启用虚拟机后，所有命令在隔离的 Linux 环境中执行，保护你的宿主机系统安全。Linux 默认仅启用基础路径限制，需要更强隔离时可在 Docker / Podman 中运行 AppImage。
 
 **什么是 Skills？如何创建自定义技能？**
 Skills 是内置的工作流模板，用于完成特定任务，如生成 PPTX、DOCX、PDF 或 XLSX 文件。Open Cowork 在 `.claude/skills/` 目录下预置了默认技能，并提供 `skill-creator` 工具帮助你构建自定义技能。
