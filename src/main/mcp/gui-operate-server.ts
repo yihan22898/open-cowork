@@ -1054,6 +1054,60 @@ export async function linuxResolveInputTool(): Promise<'xdotool' | 'ydotool' | n
 }
 
 /**
+ * Return every installed input tool (xdotool, ydotool) so callers can
+ * build an ordered fallback chain. Unlike `linuxResolveInputTool`
+ * (single-tool picker), the click/keypress dispatchers use this to try
+ * ydotool first on Wayland and fall back to xdotool (via XWayland)
+ * when ydotool fails — typically because ydotoold isn't running.
+ */
+export async function linuxResolveAvailableInputTools(): Promise<Array<'xdotool' | 'ydotool'>> {
+  const found: Array<'xdotool' | 'ydotool'> = [];
+  for (const tool of ['xdotool', 'ydotool'] as const) {
+    if (await linuxCommandExists(tool)) found.push(tool);
+  }
+  linuxGuiDebug(`resolve available input tools → [${found.join(',')}]`);
+  return found;
+}
+
+/**
+ * Translate a Linux input-tool failure into a one-line, actionable hint
+ * specific to the failure mode. After the fallback chain exhausts we want
+ * to tell the user WHY ydotool exit=2 happened (almost always: daemon not
+ * running) and what to do — not just "everything failed".
+ */
+export function explainLinuxInputFailure(
+  firstTool: 'xdotool' | 'ydotool' | null,
+  lastErr: unknown
+): string {
+  const raw = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  const lower = raw.toLowerCase();
+  // ydotool exit 2 / daemon-down signatures
+  if (
+    firstTool === 'ydotool' &&
+    (lower.includes('exit=2') ||
+      lower.includes('connection refused') ||
+      lower.includes('cannot connect') ||
+      lower.includes('no such file') ||
+      lower.includes('ydotoold'))
+  ) {
+    return (
+      `ydotoold user daemon is not running. Start it: ` +
+      `\`systemctl --user enable --now ydotoold\` (or run \`sudo setcap ` +
+      `cap_sys_admin+ep $(which ydotoold)\` first if it can't access /dev/uinput). ` +
+      `Underlying error: ${raw}`
+    );
+  }
+  if (firstTool === 'xdotool' && lower.includes('unable to open display')) {
+    return (
+      `xdotool cannot open the X display ($DISPLAY=${process.env.DISPLAY || '(unset)'}). ` +
+      `On Wayland sessions xdotool needs XWayland (usually available). ` +
+      `Underlying error: ${raw}`
+    );
+  }
+  return `Last error: ${raw}`;
+}
+
+/**
  * Resolve the screenshot tool available for the current display server.
  *
  * Preference order:
@@ -1397,34 +1451,47 @@ export async function linuxPerformClick(
   clickType: 'single' | 'double' | 'right' | 'triple',
   modifiers: string[] = []
 ): Promise<void> {
-  const tool = await linuxResolveInputTool();
-  if (!tool) {
+  // Try ydotool first on Wayland but fall back to xdotool (via XWayland)
+  // when ydotool fails — usually because ydotoold isn't running (exit=2).
+  const available = await linuxResolveAvailableInputTools();
+  if (available.length === 0) {
     throwLinuxToolMissing(
       linuxDetectDisplayServer() === 'wayland' ? 'ydotool' : 'xdotool',
       detectLinuxInstallCommand(),
     );
   }
-  if (tool === 'ydotool') {
-    const args = buildYdotoolClickArgs(globalX, globalY, clickType, modifiers);
-    linuxGuiDebug(`click → ydotool ${args.join(' ')}`);
+  const session = linuxDetectDisplayServer();
+  const ordered: Array<'ydotool' | 'xdotool'> =
+    session === 'wayland'
+      ? available.includes('ydotool') && available.includes('xdotool')
+        ? ['ydotool', 'xdotool']
+        : (available as Array<'ydotool' | 'xdotool'>)
+      : available.includes('xdotool')
+        ? ['xdotool', 'ydotool']
+        : (available as Array<'ydotool' | 'xdotool'>);
+  const tried: Array<'ydotool' | 'xdotool'> = [];
+  let lastErr: unknown;
+  for (const tool of ordered) {
+    tried.push(tool);
+    const args =
+      tool === 'ydotool'
+        ? buildYdotoolClickArgs(globalX, globalY, clickType, modifiers)
+        : buildXdotoolClickArgs(globalX, globalY, clickType, modifiers);
+    linuxGuiDebug(`click → ${tool} ${args.join(' ')}`);
     try {
-      await executeCommandSafe('ydotool', args, { timeout: 5000 });
-      linuxGuiDebug(`click → ydotool OK`);
+      await executeCommandSafe(tool, args, { timeout: 5000 });
+      linuxGuiDebug(`click → ${tool} OK (tried=${tried.join('→')})`);
+      return;
     } catch (err) {
-      linuxGuiDebug(`click → ydotool FAILED: ${(err as Error).message.replace(/\n/g, ' | ')}`);
-      throw err;
+      const msg = (err as Error).message;
+      linuxGuiDebug(`click → ${tool} FAILED: ${msg.replace(/\n/g, ' | ')}`);
+      lastErr = err;
     }
-    return;
   }
-  const args = buildXdotoolClickArgs(globalX, globalY, clickType, modifiers);
-  linuxGuiDebug(`click → xdotool ${args.join(' ')}`);
-  try {
-    await executeCommandSafe('xdotool', args, { timeout: 5000 });
-    linuxGuiDebug(`click → xdotool OK`);
-  } catch (err) {
-    linuxGuiDebug(`click → xdotool FAILED: ${(err as Error).message.replace(/\n/g, ' | ')}`);
-    throw err;
-  }
+  throw new Error(
+    `All input tools failed (tried: ${tried.join(' → ')}). ` +
+      explainLinuxInputFailure(ordered[0], lastErr),
+  );
 }
 
 /**
@@ -1494,19 +1561,41 @@ export async function linuxPerformType(
  * same `key NAME` channel so error reporting stays uniform.
  */
 export async function linuxPerformKeyPress(key: string, modifiers: string[] = []): Promise<void> {
-  const tool = await linuxResolveInputTool();
-  if (!tool) {
+  // Same fallback chain as linuxPerformClick: try ydotool first on Wayland,
+  // fall back to xdotool via XWayland when ydotoold isn't available.
+  const available = await linuxResolveAvailableInputTools();
+  if (available.length === 0) {
     throwLinuxToolMissing('xdotool', detectLinuxInstallCommand());
   }
-  const args = buildXdotoolKeyArgs(key, modifiers);
-  linuxGuiDebug(`key_press → ${tool} ${args.join(' ')}`);
-  try {
-    await executeCommandSafe(tool, args, { timeout: 5000 });
-    linuxGuiDebug(`key_press → ${tool} OK`);
-  } catch (err) {
-    linuxGuiDebug(`key_press → ${tool} FAILED: ${(err as Error).message.replace(/\n/g, ' | ')}`);
-    throw err;
+  const session = linuxDetectDisplayServer();
+  const ordered: Array<'ydotool' | 'xdotool'> =
+    session === 'wayland'
+      ? available.includes('ydotool') && available.includes('xdotool')
+        ? ['ydotool', 'xdotool']
+        : (available as Array<'ydotool' | 'xdotool'>)
+      : available.includes('xdotool')
+        ? ['xdotool', 'ydotool']
+        : (available as Array<'ydotool' | 'xdotool'>);
+  const tried: Array<'ydotool' | 'xdotool'> = [];
+  let lastErr: unknown;
+  for (const tool of ordered) {
+    tried.push(tool);
+    const args = buildXdotoolKeyArgs(key, modifiers);
+    linuxGuiDebug(`key_press → ${tool} ${args.join(' ')}`);
+    try {
+      await executeCommandSafe(tool, args, { timeout: 5000 });
+      linuxGuiDebug(`key_press → ${tool} OK (tried=${tried.join('→')})`);
+      return;
+    } catch (err) {
+      const msg = (err as Error).message;
+      linuxGuiDebug(`key_press → ${tool} FAILED: ${msg.replace(/\n/g, ' | ')}`);
+      lastErr = err;
+    }
   }
+  throw new Error(
+    `All input tools failed (tried: ${tried.join(' → ')}). ` +
+      explainLinuxInputFailure(ordered[0], lastErr),
+  );
 }
 
 /**
@@ -1608,19 +1697,49 @@ export async function linuxTakeScreenshot(
   outputPath: string,
   region?: { x: number; y: number; width: number; height: number }
 ): Promise<void> {
-  const tool = await linuxResolveScreenshotTool();
-  if (!tool) {
+  // Build the full ordered list of screenshot tools so we fall back when the
+  // first one fails — e.g. grim on a Wayland compositor that doesn't
+  // implement wlr-screencopy-unstable-v1 (VMware, GNOME Wayland, etc.).
+  const session = linuxDetectDisplayServer();
+  const installed: Array<'grim' | 'scrot' | 'gnome-screenshot'> = [];
+  for (const t of ['grim', 'scrot', 'gnome-screenshot'] as const) {
+    if (await linuxCommandExists(t)) installed.push(t);
+  }
+  if (installed.length === 0) {
     throwLinuxToolMissing('grim', detectLinuxInstallCommand());
   }
-  linuxGuiDebug(`screenshot → ${tool} ${outputPath}${region ? ` region=${JSON.stringify(region)}` : ''}`);
-  try {
-    await linuxTakeScreenshotWithTool(tool, outputPath, region);
-    linuxGuiDebug(`screenshot → ${tool} OK`);
-  } catch (err) {
-    const msg = (err as Error).message;
-    linuxGuiDebug(`screenshot → ${tool} FAILED: ${msg.replace(/\n/g, ' | ')}`);
-    throw err;
+  // Wayland order: grim → scrot → gnome-screenshot. X11: scrot → grim → gnome-screenshot.
+  // gnome-screenshot has no region capture, so it's skipped when a region was requested.
+  const order: Array<'grim' | 'scrot' | 'gnome-screenshot'> =
+    session === 'wayland'
+      ? ['grim', 'scrot', 'gnome-screenshot']
+      : ['scrot', 'grim', 'gnome-screenshot'];
+  const tried: Array<'grim' | 'scrot' | 'gnome-screenshot'> = [];
+  let lastErr: unknown;
+  for (const tool of order) {
+    if (!installed.includes(tool)) continue;
+    if (region && tool === 'gnome-screenshot') continue;
+    tried.push(tool);
+    linuxGuiDebug(`screenshot → trying ${tool} ${outputPath}${region ? ` region=${JSON.stringify(region)}` : ''}`);
+    try {
+      await linuxTakeScreenshotWithTool(tool, outputPath, region);
+      linuxGuiDebug(`screenshot → ${tool} OK (tried=${tried.join('→')})`);
+      return;
+    } catch (err) {
+      const msg = (err as Error).message;
+      linuxGuiDebug(`screenshot → ${tool} FAILED: ${msg.replace(/\n/g, ' | ')}`);
+      lastErr = err;
+    }
   }
+  // Every installed screenshot tool failed. Surface the chain so the user
+  // sees what we tried + the underlying cause hint.
+  const triedStr = tried.join(' → ') || '(none — weird)';
+  const detail = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  throw new Error(
+    `All screenshot tools failed (tried: ${triedStr}). Last error: ${detail}. ` +
+      `Common cause on Wayland: compositor lacks wlr-screencopy-unstable-v1. ` +
+      `Try switching to an X11 session (logout → "Ubuntu on Xorg") or install scrot for an X11 fallback.`,
+  );
 }
 
 async function resolveCliclickPath(): Promise<string | null> {
