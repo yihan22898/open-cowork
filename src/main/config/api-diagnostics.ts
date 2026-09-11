@@ -10,6 +10,39 @@ import * as net from 'net';
 import * as tls from 'tls';
 import OpenAI from 'openai';
 import { Anthropic } from '@anthropic-ai/sdk';
+
+// DEBUG: install a one-shot global fetch wrapper that logs every request
+// to api.minimaxi.com (MiniMax) so we can see exactly what headers the SDK
+// is putting on the wire. Idempotent — calling twice is a no-op.
+if (!(globalThis as any).__openCoworkDebugFetchInstalled) {
+  (globalThis as any).__openCoworkDebugFetchInstalled = true;
+  const originalFetch = globalThis.fetch.bind(globalThis);
+  globalThis.fetch = async function debugFetch(input: any, init?: any) {
+    const url = typeof input === 'string' ? input : (input?.url ?? '');
+    if (url.includes('minimaxi.com')) {
+      const headersObj: Record<string, string> = {};
+      if (init?.headers) {
+        if (init.headers instanceof Headers) {
+          init.headers.forEach((v: string, k: string) => (headersObj[k] = v));
+        } else if (Array.isArray(init.headers)) {
+          for (const [k, v] of init.headers) headersObj[k] = v;
+        } else {
+          Object.assign(headersObj, init.headers);
+        }
+      }
+      // Print the API key value (masked) for diagnosis.
+      const apiKeyHeader = headersObj['x-api-key'] ?? headersObj['X-Api-Key'] ?? '';
+      const authHeader = headersObj['authorization'] ?? headersObj['Authorization'] ?? '';
+      console.log(
+        `[debug-fetch] → ${init?.method ?? 'GET'} ${url}\n` +
+          `  x-api-key: ${apiKeyHeader ? apiKeyHeader.slice(0, 12) + '…(' + apiKeyHeader.length + ')' : '<MISSING>'}\n` +
+          `  authorization: ${authHeader ? authHeader.slice(0, 20) + '…' : '<MISSING>'}\n` +
+          `  all headers: ${JSON.stringify(headersObj)}`
+      );
+    }
+    return originalFetch(input as any, init);
+  } as typeof fetch;
+}
 import { PROVIDER_PRESETS, configStore } from './config-store';
 import { DEFAULT_OLLAMA_BASE_URL } from '../../shared/ollama-base-url';
 import { isLoopbackBaseUrl } from '../../shared/network/loopback';
