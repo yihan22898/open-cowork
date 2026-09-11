@@ -26,7 +26,7 @@ import { serveStdio } from '@modelcontextprotocol/server/stdio';
 writeMCPLog('=== Module Loading Started ===', 'Bootstrap');
 writeMCPLog('Imported MCP SDK modules', 'Bootstrap');
 
-import { execFile, spawn } from 'child_process';
+import { execFile, execFileSync, spawn } from 'child_process';
 import { promisify } from 'util';
 import * as os from 'os';
 import * as path from 'path';
@@ -917,6 +917,23 @@ export async function linuxCommandExists(tool: string): Promise<boolean> {
   try {
     const { stdout } = await executeCommandSafe('which', [tool], { timeout: 2000 });
     return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Sync counterpart to `linuxCommandExists`, used by callers that cannot be
+ * async (preflight, which runs before the MCP server starts). Same probe
+ * (execFileSync of `which`), same argv-only safety, same return contract.
+ */
+export function linuxCommandExistsSync(tool: string): boolean {
+  try {
+    const stdout = execFileSync('which', [tool], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    });
+    return stdout.toString('utf-8').trim().length > 0;
   } catch {
     return false;
   }

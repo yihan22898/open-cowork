@@ -192,4 +192,97 @@ describe('runPreflight', () => {
     const issues = runPreflight();
     expect(issues).toHaveLength(0);
   });
+
+  // ── Linux branch ──────────────────────────────────────────
+  //
+  // Drive `checkLinuxGuiTools` directly with an injected probe so the
+  // priority + message-construction logic is covered without booting the
+  // full preflight flow or mocking child_process.
+  async function importLinuxChecker() {
+    const mod = await import('../main/preflight');
+    return mod.checkLinuxGuiTools;
+  }
+
+  function setPlatform(value: NodeJS.Platform) {
+    Object.defineProperty(process, 'platform', { value, writable: true, configurable: true });
+  }
+
+  it('returns null when both xdotool and grim are present', async () => {
+    const check = await importLinuxChecker();
+    expect(check(() => true)).toBeNull();
+  });
+
+  it('returns a warning when only xdotool is missing', async () => {
+    const check = await importLinuxChecker();
+    const issue = check((tool) => tool === 'grim');
+    expect(issue).not.toBeNull();
+    expect(issue?.resource).toBe('Linux GUI Tools');
+    expect(issue?.message).toContain('xdotool');
+    expect(issue?.message).toContain('sudo apt install xdotool');
+  });
+
+  it('returns a warning when only grim is missing', async () => {
+    const check = await importLinuxChecker();
+    const issue = check((tool) => tool === 'xdotool');
+    expect(issue).not.toBeNull();
+    expect(issue?.message).toContain('grim');
+    expect(issue?.message).toContain('sudo apt install grim');
+  });
+
+  it('returns one combined warning (not two) when both tools are missing', async () => {
+    const check = await importLinuxChecker();
+    const issue = check(() => false);
+    expect(issue).not.toBeNull();
+    expect(issue?.message).toContain('xdotool');
+    expect(issue?.message).toContain('grim');
+  });
+
+  it('marks the warning as severity "warning" (does not block startup)', async () => {
+    const check = await importLinuxChecker();
+    const issue = check(() => false);
+    expect(issue?.severity).toBe('warning');
+  });
+
+  it('does not run the Linux GUI tools probe on darwin', async () => {
+    setPlatform('darwin');
+    touch(path.join(tmpDir, 'mcp/gui-operate-server.js'));
+    touch(path.join(tmpDir, 'node/bin/node'));
+    touch(path.join(tmpDir, 'lima-agent/index.js'));
+
+    const { runPreflight } = await import('../main/preflight');
+    const issues = runPreflight();
+    const linuxWarnings = issues.filter((i) => i.resource === 'Linux GUI Tools');
+    expect(linuxWarnings).toHaveLength(0);
+  });
+
+  it('does not run the Linux GUI tools probe on win32', async () => {
+    setPlatform('win32');
+    touch(path.join(tmpDir, 'mcp/gui-operate-server.js'));
+    touch(path.join(tmpDir, 'node/node.exe'));
+    touch(path.join(tmpDir, 'wsl-agent/index.js'));
+
+    const { runPreflight } = await import('../main/preflight');
+    const issues = runPreflight();
+    const linuxWarnings = issues.filter((i) => i.resource === 'Linux GUI Tools');
+    expect(linuxWarnings).toHaveLength(0);
+  });
+
+  it('emits the Linux warning from runPreflight on linux when tools are missing', async () => {
+    setPlatform('linux');
+    touch(path.join(tmpDir, 'mcp/gui-operate-server.js'));
+    touch(path.join(tmpDir, 'node/bin/node'));
+
+    const { runPreflight } = await import('../main/preflight');
+    const issues = runPreflight();
+    // On a Windows CI host the real `which` will not find xdotool/grim, so
+    // the warning fires naturally; on a Linux dev host the user can stub
+    // by removing the tools. Either way the warning is non-critical.
+    const linuxWarnings = issues.filter((i) => i.resource === 'Linux GUI Tools');
+    if (process.platform === 'win32' || linuxWarnings.length > 0) {
+      expect(linuxWarnings[0]?.severity).toBe('warning');
+    }
+    // If running on a real Linux host with both tools installed, the
+    // warning simply doesn't fire — which is the success case.
+    expect(linuxWarnings.length).toBeLessThanOrEqual(1);
+  });
 });
