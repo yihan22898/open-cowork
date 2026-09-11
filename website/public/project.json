@@ -67,7 +67,7 @@
     },
     {
       "name": "MiniMax",
-      "baseUrl": "https://api.minimaxi.com/anthropic",
+      "baseUrl": "https://api.minimax.io/anthropic",
       "recommendedModels": ["minimax-m3", "minimax-m2.7-highspeed", "minimax-m2.5-highspeed", "minimax-m2"]
     },
     {

@@ -12,14 +12,14 @@ import OpenAI from 'openai';
 import { Anthropic } from '@anthropic-ai/sdk';
 
 // DEBUG: install a one-shot global fetch wrapper that logs every request
-// to api.minimaxi.com (MiniMax) so we can see exactly what headers the SDK
+// to api.minimax.io (MiniMax) so we can see exactly what headers the SDK
 // is putting on the wire. Idempotent — calling twice is a no-op.
 if (!(globalThis as any).__openCoworkDebugFetchInstalled) {
   (globalThis as any).__openCoworkDebugFetchInstalled = true;
   const originalFetch = globalThis.fetch.bind(globalThis);
   globalThis.fetch = async function debugFetch(input: any, init?: any) {
     const url = typeof input === 'string' ? input : (input?.url ?? '');
-    if (url.includes('minimaxi.com')) {
+    if (url.includes('minimax.io')) {
       const headersObj: Record<string, string> = {};
       if (init?.headers) {
         if (init.headers instanceof Headers) {
@@ -244,7 +244,7 @@ function makeAnthropicClient(opts: {
   // `X-Api-Key` header rather than the standard `Authorization: Bearer`.
   // Send both so the request is accepted regardless of which the server
   // prefers.
-  const isMiniMax = (opts.baseUrl ?? '').includes('minimaxi.com');
+  const isMiniMax = (opts.baseUrl ?? '').includes('minimax.io');
   const auth = opts.useAuthToken
     ? { authToken: opts.effectiveKey }
     : { apiKey: opts.effectiveKey };
