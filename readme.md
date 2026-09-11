@@ -322,6 +322,28 @@ Yes. Open Cowork itself is completely free and open-source under the MIT license
 **Does Open Cowork work on Linux?**
 Yes — Open Cowork ships a Linux `.AppImage` for x64 systems, alongside the Windows `.exe` and macOS `.dmg`. Download the latest `Open Cowork-<version>-linux-x64.AppImage` from the [Releases Page](https://github.com/OpenCoworkAI/open-cowork/releases), make it executable (`chmod +x Open\ Cowork-*.AppImage`), and run it. For VM-level sandbox isolation, install Docker (or Podman) — Open Cowork auto-detects it and runs all commands inside the `opencowork/sandbox:latest` container.
 
+**Linux GUI automation prerequisites:** Open Cowork's computer-use features (clicking, typing, key presses, screenshots) need a few system tools on `$PATH` on the host. The preflight check at startup will warn if any are missing; install the minimum set for your session:
+
+| Display server | Required                  | Recommended for Wayland         |
+| -------------- | ------------------------- | ------------------------------- |
+| **X11**        | `xdotool`, `grim` (or `scrot`) | —                          |
+| **Wayland**    | `grim` (or `gnome-screenshot`) | `ydotool` + the `ydotoold` daemon |
+
+Install on common families:
+
+```bash
+# Debian / Ubuntu
+sudo apt install xdotool grim scrot gnome-screenshot
+
+# Fedora / RHEL
+sudo dnf install xdotool grim scrot gnome-screenshot
+
+# Arch
+sudo pacman -S xdotool grim scrot gnome-screenshot
+```
+
+For Wayland input (click / type / key), `ydotool` needs the `ydotoold` user daemon running (`systemctl --user enable --now ydotoold`). Without it the GUI action dispatch throws a clear install-hint error pointing at the missing piece.
+
 **How does sandbox isolation work?**
 Open Cowork offers multi-level protection: basic path-based restrictions on all platforms, and enhanced VM-level isolation using WSL2 (Windows) or Lima (macOS). When a VM is available, all commands execute inside an isolated Linux environment, protecting your host system.
 

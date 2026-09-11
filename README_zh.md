@@ -295,6 +295,28 @@ Open Cowork 是 Claude Cowork 的开源实现，在此基础上增加了多模�
 **支持 Linux 吗？**
 支持。Open Cowork 提供 Linux x64 的 `.AppImage` 安装包，与 Windows `.exe` 和 macOS `.dmg` 一同发布。请到 [Releases 页面](https://github.com/OpenCoworkAI/open-cowork/releases) 下载最新的 `Open Cowork-<version>-linux-x64.AppImage`，添加执行权限（`chmod +x Open\ Cowork-*.AppImage`）后即可运行。Linux 上默认仅启用基础路径守卫沙盒，若需要更强隔离，可将 AppImage 运行在容器内。
 
+**Linux GUI 自动化前置依赖：** Open Cowork 的 Computer Use（点击、输入、按键、截图）需要在宿主机 `$PATH` 上安装几个系统工具。启动时的 preflight 检查会在缺失时给出警告；请按当前会话类型安装最小集合：
+
+| 显示服务       | 必装                                    | Wayland 推荐补充           |
+| -------------- | --------------------------------------- | -------------------------- |
+| **X11**        | `xdotool`、`grim`（或 `scrot`）         | —                          |
+| **Wayland**    | `grim`（或 `gnome-screenshot`）         | `ydotool` + `ydotoold` 守护进程 |
+
+常见发行版安装命令：
+
+```bash
+# Debian / Ubuntu
+sudo apt install xdotool grim scrot gnome-screenshot
+
+# Fedora / RHEL
+sudo dnf install xdotool grim scrot gnome-screenshot
+
+# Arch
+sudo pacman -S xdotool grim scrot gnome-screenshot
+```
+
+Wayland 下若需要输入（点击 / 输入 / 按键），`ydotool` 依赖 `ydotoold` 用户态守护进程（`systemctl --user enable --now ydotoold`）。缺失时 GUI action 会抛出带安装提示的明确错误信息。
+
 **沙盒隔离是怎么工作的？**
 Open Cowork 提供多级安全保护：所有平台均有基础的路径限制，Windows 和 macOS 还支持虚拟机级别隔离（分别使用 WSL2 和 Lima）。启用虚拟机后，所有命令在隔离的 Linux 环境中执行，保护你的宿主机系统安全。Linux 默认仅启用基础路径限制，需要更强隔离时可在 Docker / Podman 中运行 AppImage。
 
