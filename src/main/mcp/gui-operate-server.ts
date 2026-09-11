@@ -920,8 +920,26 @@ let cachedCliclickPath: string | null | undefined;
 // "tool missing", "exec failed with stderr", or "Wayland compositor blocks
 // wlr-screencopy" are visible immediately without digging through the MCP
 // log files. Tagged with `[gui-linux-debug]` so users can grep for it.
+//
+// Also mirrored to ~/.config/open-cowork/logs/gui-linux-debug.log so users
+// can `cat` the file and paste it back when reporting issues — much easier
+// than copying from a scrolling terminal.
+let linuxGuiDebugFilePath: string | null = null;
 function linuxGuiDebug(msg: string): void {
-  process.stderr.write(`[gui-linux-debug] ${msg}\n`);
+  const line = `[gui-linux-debug] ${msg}\n`;
+  process.stderr.write(line);
+  try {
+    if (!linuxGuiDebugFilePath) {
+      const logDir =
+        process.env.OPEN_COWORK_LOG_DIR ||
+        path.join(process.env.HOME || os.tmpdir(), '.config', 'open-cowork', 'logs');
+      fsSync.mkdirSync(logDir, { recursive: true });
+      linuxGuiDebugFilePath = path.join(logDir, 'gui-linux-debug.log');
+    }
+    fsSync.appendFileSync(linuxGuiDebugFilePath, line);
+  } catch {
+    // Best-effort logging; never throw from the debug helper.
+  }
 }
 
 export async function linuxCommandExists(tool: string): Promise<boolean> {
@@ -2321,6 +2339,19 @@ async function executeCommandSafe(
       stderr: typeof result.stderr === 'string' ? result.stderr : '',
     };
   } catch (error: unknown) {
+    // On Linux GUI tools, surface the real stderr so the cause is visible
+    // in `npm run dev` (e.g. "wlr-screencopy-unstable-v1 not supported",
+    // "xdotool: unable to open display"). We only log on Linux to avoid
+    // noise on macOS/Windows.
+    if (PLATFORM === 'linux') {
+      const anyErr = error as { stderr?: string; code?: string; signal?: string };
+      const stderr = (anyErr?.stderr || '').toString().trim();
+      const exit = anyErr?.code ?? '(unknown)';
+      linuxGuiDebug(
+        `exec FAILED: ${command} ${args.join(' ')} → exit=${exit}` +
+          (stderr ? ` stderr="${stderr.replace(/\n/g, ' | ')}"` : '')
+      );
+    }
     throw new Error(
       `Command execution failed: ${error instanceof Error ? error.message : String(error)}`
     );
@@ -7528,6 +7559,10 @@ function createMcpServer(): Server {
   // Handle tool calls
   server.setRequestHandler('tools/call', async (request): Promise<CallToolResult> => {
     const { name, arguments: args } = request.params;
+    const t0 = Date.now();
+    // Log every MCP tool call so the user can see in the terminal whether
+    // the LLM is actually invoking GUI tools vs falling back to shell.
+    linuxGuiDebug(`TOOL CALL ► ${name} args=${JSON.stringify(args)}`);
 
     try {
       writeMCPLog(`[CallTool] name=${name}, args=${JSON.stringify(args ?? {})}`, 'Tool Call');
@@ -7822,6 +7857,8 @@ function createMcpServer(): Server {
           throw new Error(`Unknown tool: ${name}`);
       }
 
+      const ms = Date.now() - t0;
+      linuxGuiDebug(`TOOL CALL ◄ ${name} OK in ${ms}ms`);
       return {
         content: [
           {
@@ -7831,6 +7868,8 @@ function createMcpServer(): Server {
         ],
       };
     } catch (error: unknown) {
+      const ms = Date.now() - t0;
+      linuxGuiDebug(`TOOL CALL ◄ ${name} ERROR in ${ms}ms: ${(error instanceof Error ? error.message : String(error)).replace(/\n/g, ' | ').slice(0, 500)}`);
       return {
         content: [
           {
@@ -7882,6 +7921,66 @@ async function main() {
     writeMCPLog('GUI Operate MCP Server running on stdio', 'Server Start');
     writeMCPLog('=== Server Ready ===', 'Server Start');
     writeMCPLog('Waiting for MCP requests...', 'Server Start');
+
+    // ── Linux GUI diagnostics banner ────────────────────────────────────
+    // Print a one-shot summary of the GUI environment so failures are
+    // diagnosable from the terminal where `npm run dev` is running.
+    // Cheap: only on Linux, only at startup.
+    if (PLATFORM === 'linux') {
+      const session = linuxDetectDisplayServer();
+      const waylandCompositor = process.env.XDG_CURRENT_DESKTOP || '(unknown)';
+      const pathDirs = (process.env.PATH || '').split(':');
+      const pathHasUsrBin = pathDirs.includes('/usr/bin');
+      const guiEnvLines = [
+        '',
+        '┌── [gui-linux-debug] STARTUP ENVIRONMENT ─────────────────────────',
+        `│ platform           = ${PLATFORM}`,
+        `│ session            = ${session}`,
+        `│ WAYLAND_DISPLAY    = ${process.env.WAYLAND_DISPLAY || '(unset)'}`,
+        `│ DISPLAY            = ${process.env.DISPLAY || '(unset)'}`,
+        `│ XDG_CURRENT_DESKTOP = ${waylandCompositor}`,
+        `│ XDG_SESSION_TYPE   = ${process.env.XDG_SESSION_TYPE || '(unset)'}`,
+        `│ PATH first 5       = ${pathDirs.slice(0, 5).join(':')}`,
+        `│ PATH has /usr/bin  = ${pathHasUsrBin}`,
+        `│ PATH total dirs    = ${pathDirs.length}`,
+        `│ HOME               = ${process.env.HOME || '(unset)'}`,
+        '│',
+        '│ Tool probe (sync):',
+        `│   grim           = ${linuxCommandExistsSync('grim') ? '✓ FOUND' : '✗ MISSING'}`,
+        `│   scrot          = ${linuxCommandExistsSync('scrot') ? '✓ FOUND' : '✗ MISSING'}`,
+        `│   gnome-screenshot = ${linuxCommandExistsSync('gnome-screenshot') ? '✓ FOUND' : '✗ MISSING'}`,
+        `│   xdotool        = ${linuxCommandExistsSync('xdotool') ? '✓ FOUND' : '✗ MISSING'}`,
+        `│   ydotool        = ${linuxCommandExistsSync('ydotool') ? '✓ FOUND' : '✗ MISSING'}`,
+        `│   xclip          = ${linuxCommandExistsSync('xclip') ? '✓ FOUND' : '✗ MISSING'}`,
+        `│   wl-copy        = ${linuxCommandExistsSync('wl-copy') ? '✓ FOUND' : '✗ MISSING'}`,
+        `│   xrandr         = ${linuxCommandExistsSync('xrandr') ? '✓ FOUND' : '✗ MISSING'}`,
+        `│   wlr-randr      = ${linuxCommandExistsSync('wlr-randr') ? '✓ FOUND' : '✗ MISSING'}`,
+        `│   ydotoold (svc) = ${
+          linuxCommandExistsSync('ydotoold') ? '✓ FOUND' : '✗ MISSING'
+        } (note: just the binary — the daemon may not be running)`,
+        '└─────────────────────────────────────────────────────────────────',
+        '',
+      ];
+      linuxGuiDebug(guiEnvLines.join('\n'));
+
+      // Headline warnings for the most common failure modes.
+      if (!pathHasUsrBin) {
+        linuxGuiDebug(
+          '⚠ /usr/bin is NOT on PATH — most apt-installed GUI tools live there. ' +
+            'Add it: export PATH="/usr/bin:$PATH" or fix the MCP server env.'
+        );
+      }
+      if (session === 'wayland' && linuxCommandExistsSync('grim')) {
+        // Pre-warn that wlr-screencopy-unstable-v1 may not be available.
+        linuxGuiDebug(
+          'ℹ Wayland detected. grim needs the compositor to implement wlr-screencopy-unstable-v1. ' +
+            'VMware virtual Wayland and GNOME Wayland often lack this. Switch to X11 or use scrot (X11-only) as fallback.'
+        );
+      }
+      if (session === 'wayland' && linuxCommandExistsSync('ydotool') && !linuxCommandExistsSync('ydotoold')) {
+        linuxGuiDebug('⚠ ydotool found but ydotoold daemon binary not on PATH. Input will fail.');
+      }
+    }
 
     // Keep the process alive - server will handle MCP protocol messages
     // The transport handles the stdio communication automatically
