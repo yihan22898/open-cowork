@@ -913,11 +913,25 @@ let cachedCliclickPath: string | null | undefined;
  * (command missing, timeout, non-zero exit). Result is cached per (process,
  * tool) so repeated action dispatch does not re-fork on every call.
  */
+
+// ── Linux GUI diagnostic logging ────────────────────────────────────────────
+// stderr-based debug output. Stderr is inherited by the parent Electron
+// process and surfaces in the `npm run dev` terminal, so issues like
+// "tool missing", "exec failed with stderr", or "Wayland compositor blocks
+// wlr-screencopy" are visible immediately without digging through the MCP
+// log files. Tagged with `[gui-linux-debug]` so users can grep for it.
+function linuxGuiDebug(msg: string): void {
+  process.stderr.write(`[gui-linux-debug] ${msg}\n`);
+}
+
 export async function linuxCommandExists(tool: string): Promise<boolean> {
   try {
     const { stdout } = await executeCommandSafe('which', [tool], { timeout: 2000 });
-    return stdout.trim().length > 0;
-  } catch {
+    const ok = stdout.trim().length > 0;
+    linuxGuiDebug(`which ${tool} → ${ok ? stdout.trim() : '(not found)'}`);
+    return ok;
+  } catch (err) {
+    linuxGuiDebug(`which ${tool} → ERROR ${(err as Error).message}`);
     return false;
   }
 }
@@ -1011,11 +1025,14 @@ export function selectLinuxScreenshotTool(
  */
 export async function linuxResolveInputTool(): Promise<'xdotool' | 'ydotool' | null> {
   const server = linuxDetectDisplayServer();
+  linuxGuiDebug(`resolve input tool — session=${server} PATH=${process.env.PATH?.split(':').slice(0, 3).join(':')}...`);
   const available = new Set<string>();
   for (const tool of ['xdotool', 'ydotool'] as const) {
     if (await linuxCommandExists(tool)) available.add(tool);
   }
-  return selectLinuxInputTool(server, available);
+  const picked = selectLinuxInputTool(server, available);
+  linuxGuiDebug(`resolve input tool → picked=${picked ?? 'null'} (available=[${[...available].join(',')}])`);
+  return picked;
 }
 
 /**
@@ -1034,11 +1051,14 @@ export async function linuxResolveScreenshotTool(): Promise<
   'grim' | 'scrot' | 'gnome-screenshot' | null
 > {
   const server = linuxDetectDisplayServer();
+  linuxGuiDebug(`resolve screenshot tool — session=${server}`);
   const available = new Set<string>();
   for (const tool of ['grim', 'scrot', 'gnome-screenshot'] as const) {
     if (await linuxCommandExists(tool)) available.add(tool);
   }
-  return selectLinuxScreenshotTool(server, available);
+  const picked = selectLinuxScreenshotTool(server, available);
+  linuxGuiDebug(`resolve screenshot tool → picked=${picked ?? 'null'} (available=[${[...available].join(',')}])`);
+  return picked;
 }
 
 /**
@@ -1368,11 +1388,25 @@ export async function linuxPerformClick(
   }
   if (tool === 'ydotool') {
     const args = buildYdotoolClickArgs(globalX, globalY, clickType, modifiers);
-    await executeCommandSafe('ydotool', args, { timeout: 5000 });
+    linuxGuiDebug(`click → ydotool ${args.join(' ')}`);
+    try {
+      await executeCommandSafe('ydotool', args, { timeout: 5000 });
+      linuxGuiDebug(`click → ydotool OK`);
+    } catch (err) {
+      linuxGuiDebug(`click → ydotool FAILED: ${(err as Error).message.replace(/\n/g, ' | ')}`);
+      throw err;
+    }
     return;
   }
   const args = buildXdotoolClickArgs(globalX, globalY, clickType, modifiers);
-  await executeCommandSafe('xdotool', args, { timeout: 5000 });
+  linuxGuiDebug(`click → xdotool ${args.join(' ')}`);
+  try {
+    await executeCommandSafe('xdotool', args, { timeout: 5000 });
+    linuxGuiDebug(`click → xdotool OK`);
+  } catch (err) {
+    linuxGuiDebug(`click → xdotool FAILED: ${(err as Error).message.replace(/\n/g, ' | ')}`);
+    throw err;
+  }
 }
 
 /**
@@ -1447,7 +1481,14 @@ export async function linuxPerformKeyPress(key: string, modifiers: string[] = []
     throwLinuxToolMissing('xdotool', detectLinuxInstallCommand());
   }
   const args = buildXdotoolKeyArgs(key, modifiers);
-  await executeCommandSafe(tool, args, { timeout: 5000 });
+  linuxGuiDebug(`key_press → ${tool} ${args.join(' ')}`);
+  try {
+    await executeCommandSafe(tool, args, { timeout: 5000 });
+    linuxGuiDebug(`key_press → ${tool} OK`);
+  } catch (err) {
+    linuxGuiDebug(`key_press → ${tool} FAILED: ${(err as Error).message.replace(/\n/g, ' | ')}`);
+    throw err;
+  }
 }
 
 /**
@@ -1553,7 +1594,15 @@ export async function linuxTakeScreenshot(
   if (!tool) {
     throwLinuxToolMissing('grim', detectLinuxInstallCommand());
   }
-  await linuxTakeScreenshotWithTool(tool, outputPath, region);
+  linuxGuiDebug(`screenshot → ${tool} ${outputPath}${region ? ` region=${JSON.stringify(region)}` : ''}`);
+  try {
+    await linuxTakeScreenshotWithTool(tool, outputPath, region);
+    linuxGuiDebug(`screenshot → ${tool} OK`);
+  } catch (err) {
+    const msg = (err as Error).message;
+    linuxGuiDebug(`screenshot → ${tool} FAILED: ${msg.replace(/\n/g, ' | ')}`);
+    throw err;
+  }
 }
 
 async function resolveCliclickPath(): Promise<string | null> {
@@ -3445,14 +3494,20 @@ export async function linuxGetDisplayConfiguration(
   const toolProbe = probe ?? linuxCommandExistsSync;
   const execFn = exec ?? executeCommandSafe;
 
+  linuxGuiDebug(`getDisplays: probing (has xrandr=${toolProbe('xrandr')} has wlr-randr=${toolProbe('wlr-randr')})`);
+
   // 1. xrandr on X11 is the most reliable source.
   if (toolProbe('xrandr')) {
     try {
       const { stdout } = await execFn('xrandr', ['--query'], { timeout: 2000 });
       const parsed = parseXrandrOutput(stdout);
-      if (parsed) return finalizeDisplayConfig(parsed);
-    } catch {
-      // fall through to next probe
+      if (parsed) {
+        linuxGuiDebug(`getDisplays: xrandr parsed ${parsed.length} display(s)`);
+        return finalizeDisplayConfig(parsed);
+      }
+      linuxGuiDebug(`getDisplays: xrandr ran but parsed 0 displays (no connected outputs?)`);
+    } catch (err) {
+      linuxGuiDebug(`getDisplays: xrandr FAILED: ${(err as Error).message.replace(/\n/g, ' | ')}`);
     }
   }
 
@@ -3461,15 +3516,20 @@ export async function linuxGetDisplayConfiguration(
     try {
       const { stdout } = await execFn('wlr-randr', [], { timeout: 2000 });
       const parsed = parseWlrRandrOutput(stdout);
-      if (parsed) return finalizeDisplayConfig(parsed);
-    } catch {
-      // fall through to fallback
+      if (parsed) {
+        linuxGuiDebug(`getDisplays: wlr-randr parsed ${parsed.length} display(s)`);
+        return finalizeDisplayConfig(parsed);
+      }
+      linuxGuiDebug(`getDisplays: wlr-randr ran but parsed 0 displays`);
+    } catch (err) {
+      linuxGuiDebug(`getDisplays: wlr-randr FAILED: ${(err as Error).message.replace(/\n/g, ' | ')}`);
     }
   }
 
   // 3. Fallback: single 1920x1080 display at origin (0, 0). Lets the
   //    coordinate math succeed; users on multi-display setups without
   //    a working detection tool will see clipped coordinates.
+  linuxGuiDebug(`getDisplays: no real probe succeeded — using synthetic 1920x1080 fallback`);
   return finalizeDisplayConfig([
     { name: 'Display 0', isMain: true, width: 1920, height: 1080, originX: 0, originY: 0 },
   ]);
@@ -4157,6 +4217,7 @@ async function performClick(
 
   // Linux implementation (xdotool on X11, ydotool on Wayland)
   if (PLATFORM === 'linux') {
+    linuxGuiDebug(`performClick → linux branch (${globalX},${globalY} ${clickType} mods=${JSON.stringify(modifiers)})`);
     await linuxPerformClick(globalX, globalY, clickType, modifiers);
     await addClickToHistory(localX, localY, displayIndex, clickType);
     return `Performed ${clickType} click at (${localX}, ${localY}) on display ${displayIndex} (global: ${globalX}, ${globalY})`;
@@ -4233,6 +4294,7 @@ async function performType(
 
   // Linux implementation (xdotool / ydotool with xclip / wl-copy fallback)
   if (PLATFORM === 'linux') {
+    linuxGuiDebug(`performType → linux branch (len=${text.length} method=${inputMethod})`);
     writeMCPLog(
       `[performType] Linux: Typing text. text length: ${text.length}, inputMethod=${inputMethod}`,
       'Type Operation'
@@ -4327,6 +4389,7 @@ async function performKeyPress(key: string, modifiers: string[] = []): Promise<s
 
   // Linux implementation
   if (PLATFORM === 'linux') {
+    linuxGuiDebug(`performKeyPress → linux branch (key="${key}" mods=${JSON.stringify(modifiers)})`);
     writeMCPLog(
       `[performKeyPress] Linux: key="${key}", modifiers=${JSON.stringify(modifiers)}`,
       'Key Press Debug'
@@ -4730,6 +4793,7 @@ async function takeScreenshot(
 
   // Linux implementation (grim / scrot / gnome-screenshot)
   if (PLATFORM === 'linux') {
+    linuxGuiDebug(`takeScreenshot → linux branch (path=${finalPath} displayIndex=${displayIndex} region=${JSON.stringify(region)})`);
     let globalRegion = region;
     if (region && displayIndex !== undefined) {
       const { globalX, globalY } = await convertToGlobalCoordinates(
@@ -4851,6 +4915,7 @@ async function takeScreenshotForDisplay(
   forceRefresh?: boolean
   // annotateClicks?: boolean
 ): Promise<CallToolResult> {
+  linuxGuiDebug(`takeScreenshotForDisplay → displayIndex=${displayIndex} region=${JSON.stringify(region)} reason=${reason ?? '(none)'} forceRefresh=${forceRefresh}`);
   // Clean up old screenshots to prevent disk accumulation
   cleanupOldScreenshots();
 
@@ -7477,6 +7542,7 @@ function createMcpServer(): Server {
         }
 
         case 'click': {
+          linuxGuiDebug(`MCP tool click → args=${JSON.stringify(args)}`);
           const {
             x,
             y,
@@ -7585,6 +7651,7 @@ function createMcpServer(): Server {
         }
 
         case 'screenshot': {
+          linuxGuiDebug(`MCP tool screenshot → args=${JSON.stringify(args)}`);
           const { output_path, display_index, region } = args as {
             output_path?: string;
             display_index?: number;
@@ -7610,6 +7677,7 @@ function createMcpServer(): Server {
         }
 
         case 'screenshot_for_display': {
+          linuxGuiDebug(`MCP tool screenshot_for_display → args=${JSON.stringify(args)}`);
           const { display_index, region, reason, force_refresh } = args as {
             display_index?: number;
             region?: { x: number; y: number; width: number; height: number };
