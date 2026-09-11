@@ -1433,6 +1433,112 @@ export async function linuxPerformKeyPress(key: string, modifiers: string[] = []
   await executeCommandSafe(tool, args, { timeout: 5000 });
 }
 
+/**
+ * Build the argv for `grim` (wlroots-native screenshot tool).
+ *
+ * `grim [OPTIONS] OUTPUT`. The `-g` flag selects a region in the format
+ * `X,Y WxH` (e.g. `100,200 640x480`); grim treats coordinates as physical
+ * pixels relative to the active output. The `-o` flag would let us target a
+ * specific wlroots output name but we omit it here because the MCP API
+ * speaks in display *index*, not compositor-specific names.
+ */
+export function buildGrimArgs(
+  outputPath: string,
+  region?: { x: number; y: number; width: number; height: number }
+): string[] {
+  const args: string[] = [];
+  if (region) {
+    args.push('-g', `${region.x},${region.y} ${region.width}x${region.height}`);
+  }
+  args.push(outputPath);
+  return args;
+}
+
+/**
+ * Build the argv for `scrot` (X11 screenshot tool).
+ *
+ * `scrot [OPTIONS] [OUTPUT]`. The `-a` flag captures a region in the format
+ * `X,Y,W,H`. `-d N` would select display N but scrot's display numbering
+ * follows Xinerama, which doesn't always line up with the MCP API's logical
+ * display indices, so we leave it out and rely on scrot's default behaviour.
+ */
+export function buildScrotArgs(
+  outputPath: string,
+  region?: { x: number; y: number; width: number; height: number }
+): string[] {
+  const args: string[] = [];
+  if (region) {
+    args.push('-a', `${region.x},${region.y},${region.width},${region.height}`);
+  }
+  args.push(outputPath);
+  return args;
+}
+
+/**
+ * Build the argv for `gnome-screenshot` as a full-screen fallback.
+ *
+ * gnome-screenshot takes `-f FILE` to write the screenshot to a path; it
+ * has no region-capture option, so the caller must check for a region and
+ * pick a different tool if one was supplied.
+ */
+export function buildGnomeScreenshotArgs(outputPath: string): string[] {
+  return ['-f', outputPath];
+}
+
+/**
+ * Take a screenshot on Linux using a pre-resolved tool. Lower-level helper
+ * that callers (and tests) supply the tool name to; the public
+ * `linuxTakeScreenshot` resolves the tool itself.
+ *
+ * Region capture is supported by grim and scrot only — gnome-screenshot
+ * rejects region requests with a clear error so the caller can install the
+ * right tool instead of silently falling back to a full-screen capture when
+ * the agent asked for a crop.
+ */
+export async function linuxTakeScreenshotWithTool(
+  tool: 'grim' | 'scrot' | 'gnome-screenshot',
+  outputPath: string,
+  region?: { x: number; y: number; width: number; height: number }
+): Promise<void> {
+  if (tool === 'grim') {
+    await executeCommandSafe('grim', buildGrimArgs(outputPath, region), { timeout: 10000 });
+    return;
+  }
+  if (tool === 'scrot') {
+    await executeCommandSafe('scrot', buildScrotArgs(outputPath, region), { timeout: 10000 });
+    return;
+  }
+  // gnome-screenshot
+  if (region) {
+    throw new Error(
+      'gnome-screenshot does not support region capture. Install `grim` (Wayland) or `scrot` (X11) for region screenshots.',
+    );
+  }
+  await executeCommandSafe('gnome-screenshot', buildGnomeScreenshotArgs(outputPath), {
+    timeout: 10000,
+  });
+}
+
+/**
+ * Take a screenshot on Linux, dispatching to the active screenshot tool.
+ *
+ * Tool selection follows the plan: grim > gnome-screenshot on Wayland,
+ * scrot > gnome-screenshot on X11. The detection work is delegated to
+ * `linuxResolveScreenshotTool`; the actual dispatch lives in
+ * `linuxTakeScreenshotWithTool` so tests can drive both layers
+ * independently.
+ */
+export async function linuxTakeScreenshot(
+  outputPath: string,
+  region?: { x: number; y: number; width: number; height: number }
+): Promise<void> {
+  const tool = await linuxResolveScreenshotTool();
+  if (!tool) {
+    throwLinuxToolMissing('grim', detectLinuxInstallCommand());
+  }
+  await linuxTakeScreenshotWithTool(tool, outputPath, region);
+}
+
 async function resolveCliclickPath(): Promise<string | null> {
   if (cachedCliclickPath !== undefined) return cachedCliclickPath;
   if (PLATFORM !== 'darwin') {
@@ -4367,6 +4473,35 @@ async function takeScreenshot(
     await windowsTakeScreenshot(finalPath, displayIndex, globalRegion);
 
     // Verify the file was created
+    try {
+      await fs.access(finalPath);
+      const stats = await fs.stat(finalPath);
+      return JSON.stringify({
+        success: true,
+        path: finalPath,
+        size: stats.size,
+        displayIndex: displayIndex ?? 'all',
+        timestamp: new Date().toISOString(),
+      });
+    } catch {
+      throw new Error(`Screenshot file was not created at ${finalPath}`);
+    }
+  }
+
+  // Linux implementation (grim / scrot / gnome-screenshot)
+  if (PLATFORM === 'linux') {
+    let globalRegion = region;
+    if (region && displayIndex !== undefined) {
+      const { globalX, globalY } = await convertToGlobalCoordinates(
+        region.x,
+        region.y,
+        displayIndex
+      );
+      globalRegion = { x: globalX, y: globalY, width: region.width, height: region.height };
+    }
+
+    await linuxTakeScreenshot(finalPath, globalRegion);
+
     try {
       await fs.access(finalPath);
       const stats = await fs.stat(finalPath);
