@@ -1383,12 +1383,18 @@ export async function linuxPerformClick(
  * server), then send Ctrl+V. This mirrors the macOS implementation's choice
  * to fall back to paste for Unicode, where key-by-key synthesis drops or
  * mojibakes code points.
+ *
+ * `preserveClipboard` is accepted to mirror the macOS signature but is
+ * intentionally a no-op on Linux: xclip / wl-paste restore is racy on a
+ * focused widget (the paste happens between snapshot and restore), and the
+ * plan's scope is "missing-tool errors", not clipboard ergonomics. Callers
+ * that pass `false` get the same behaviour as `true`.
  */
 export async function linuxPerformType(
   text: string,
   pressEnter: boolean = false,
   inputMethod: 'auto' | 'keystroke' | 'paste' = 'auto',
-  preserveClipboard: boolean = true
+  _preserveClipboard: boolean = true
 ): Promise<string> {
   // eslint-disable-next-line no-control-regex
   const hasNonAscii = /[^\x00-\x7F]/.test(text);
@@ -1401,12 +1407,6 @@ export async function linuxPerformType(
       throw new Error(
         'Cannot paste on Linux without a display server. Set $WAYLAND_DISPLAY or $DISPLAY.',
       );
-    }
-
-    if (preserveClipboard) {
-      // Best-effort snapshot: read current clipboard bytes so we can restore.
-      // wl-copy / xclip read isn't symmetric (xclip -o, wl-paste), so we
-      // intentionally leave the previous content in place if the read fails.
     }
 
     await executeCommandWithStdin(copySpec.command, copySpec.args, text, 5000);
