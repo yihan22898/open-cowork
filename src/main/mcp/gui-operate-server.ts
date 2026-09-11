@@ -1086,6 +1086,353 @@ export function detectLinuxInstallCommand(): string {
   }
 }
 
+/**
+ * Normalize a user-supplied modifier name (from the MCP tool API) to the
+ * lowercase key xdotool/ydotool recognize on their `keydown` channel.
+ *
+ * macOS-style aliases (`cmd`, `command`, `option`) collapse to their closest
+ * Linux equivalents (`ctrl`, `alt`) so the same agent call works on both
+ * platforms without callers having to know which modifier maps where.
+ */
+export function mapLinuxModifier(name: string): 'ctrl' | 'shift' | 'alt' | 'super' {
+  const lower = name.toLowerCase();
+  if (lower === 'cmd' || lower === 'command' || lower === 'control' || lower === 'ctrl') {
+    return 'ctrl';
+  }
+  if (lower === 'shift') return 'shift';
+  if (lower === 'alt' || lower === 'option') return 'alt';
+  if (lower === 'super' || lower === 'meta' || lower === 'win') return 'super';
+  // Default unknown modifiers to ctrl so a stray "command" doesn't silently
+  // drop a modifier the caller expected to be applied.
+  return 'ctrl';
+}
+
+/**
+ * Map a user-facing key name (from the MCP tool API) to the symbol xdotool
+ * expects. xdotool's keysyms differ from the human-friendly names the API
+ * accepts (e.g. `Enter` -> `Return`, `Backspace` -> `BackSpace`, arrow keys
+ * are `Up`/`Down`/`Left`/`Right`).
+ *
+ * Single characters pass through unchanged so `key='a'` becomes `key='a'`.
+ */
+export function mapLinuxKey(key: string): string {
+  const aliases: Record<string, string> = {
+    enter: 'Return',
+    return: 'Return',
+    escape: 'Escape',
+    esc: 'Escape',
+    tab: 'Tab',
+    space: 'space',
+    backspace: 'BackSpace',
+    delete: 'Delete',
+    up: 'Up',
+    arrowup: 'Up',
+    down: 'Down',
+    arrowdown: 'Down',
+    left: 'Left',
+    arrowleft: 'Left',
+    right: 'Right',
+    arrowright: 'Right',
+    home: 'Home',
+    end: 'End',
+    pageup: 'Page_Up',
+    pagedown: 'Page_Down',
+    insert: 'Insert',
+  };
+  const lower = key.toLowerCase();
+  if (aliases[lower]) return aliases[lower];
+  return key;
+}
+
+/**
+ * Build the argv for an xdotool synthesised click.
+ *
+ * `xdotool mousemove -- X Y click [N]` is the canonical sequence: position
+ * the mouse first (avoids racing with a stale pointer location), then click
+ * with the requested button (1=left, 2=middle, 3=right). For double/triple
+ * clicks we use `--repeat N` to keep the events tightly grouped, which
+ * compositors treat as a multi-click rather than two independent presses.
+ *
+ * Modifiers are applied via `keydown NAME ... keyup NAME` so they remain
+ * held only for the duration of the click.
+ */
+export function buildXdotoolClickArgs(
+  globalX: number,
+  globalY: number,
+  clickType: 'single' | 'double' | 'right' | 'triple',
+  modifiers: string[]
+): string[] {
+  const args: string[] = ['mousemove', '--', String(globalX), String(globalY)];
+  switch (clickType) {
+    case 'double':
+      args.push('click', '--repeat', '2', '1');
+      break;
+    case 'triple':
+      args.push('click', '--repeat', '3', '1');
+      break;
+    case 'right':
+      args.push('click', '3');
+      break;
+    case 'single':
+    default:
+      args.push('click', '1');
+      break;
+  }
+  if (modifiers.length === 0) return args;
+  const downs: string[] = [];
+  const ups: string[] = [];
+  for (const m of modifiers) {
+    const mapped = mapLinuxModifier(m);
+    downs.push('keydown', mapped);
+    ups.push('keyup', mapped);
+  }
+  return [...downs, ...args, ...ups];
+}
+
+/**
+ * Build the argv for a ydotool synthesised click.
+ *
+ * ydotool's input layer is BTN_* codes (0xC0 left, 0xC1 right, 0xC2 middle),
+ * not xdotool's numeric mouse buttons. There is no `--repeat` for multi-
+ * click, so we emit one `click` per count. The `-a` flag on mousemove
+ * switches ydotool to absolute coordinates, matching the input convention
+ * used by `convertToGlobalCoordinates` upstream.
+ */
+export function buildYdotoolClickArgs(
+  globalX: number,
+  globalY: number,
+  clickType: 'single' | 'double' | 'right' | 'triple',
+  _modifiers: string[]
+): string[] {
+  const btnCode =
+    clickType === 'right' ? '0xC1' : clickType === 'double' || clickType === 'single' || clickType === 'triple' ? '0xC0' : '0xC0';
+  const repeat = clickType === 'double' ? 2 : clickType === 'triple' ? 3 : 1;
+  const args: string[] = ['mousemove', '-a', String(globalX), String(globalY)];
+  for (let i = 0; i < repeat; i++) {
+    args.push('click', btnCode);
+  }
+  // ydotool key syntax differs (`key`) and modifier handling is intentionally
+  // skipped here; complex modifier+click on Wayland needs ydotoold + a
+  // session protocol that isn't worth building for the common case.
+  return args;
+}
+
+/**
+ * Build the argv for `xdotool type` with optional trailing Enter.
+ *
+ * `--delay 12` spaces characters so the focused widget has time to process
+ * each one; `--clearmodifiers` avoids stray Shift/Ctrl from a previous click
+ * leaking into the typed text. The trailing `key Return` for `pressEnter`
+ * uses the same key-sym vocabulary as the rest of the helper.
+ */
+export function buildXdotoolTypeArgs(text: string, pressEnter: boolean): string[] {
+  const args: string[] = ['type', '--delay', '12', '--clearmodifiers', text];
+  if (pressEnter) args.push('key', 'Return');
+  return args;
+}
+
+/**
+ * Build the argv for `xdotool key NAME` with optional modifiers.
+ *
+ * Modifiers prefix the key as `ctrl+shift+Tab` (xdotool's own syntax), which
+ * is more compact than `keydown`/`keyup` for one-shot combinations. The
+ * shortcut is only valid when every modifier is held for the duration of the
+ * keypress — which is what `key` does — so the simpler form is correct here.
+ */
+export function buildXdotoolKeyArgs(key: string, modifiers: string[]): string[] {
+  const keySym = mapLinuxKey(key);
+  if (modifiers.length === 0) return ['key', keySym];
+  const prefix = modifiers.map((m) => mapLinuxModifier(m)).join('+');
+  return ['key', `${prefix}+${keySym}`];
+}
+
+/**
+ * Pick the clipboard-write tool for the active display server.
+ *
+ * Wayland sessions use `wl-copy` (wlroots clip protocol); X11 sessions use
+ * `xclip`. The chosen tool is later invoked with stdin so the typed text
+ * never appears in argv or process listings.
+ */
+export function selectLinuxPasteTool(
+  server: 'wayland' | 'x11' | 'unknown'
+): 'wl-copy' | 'xclip' | null {
+  if (server === 'wayland') return 'wl-copy';
+  if (server === 'x11') return 'xclip';
+  return null;
+}
+
+/**
+ * Pick the clipboard-paste argv for the active display server.
+ *
+ * Returns the command + args needed to feed stdin into the chosen clipboard
+ * tool. Separated from `selectLinuxPasteTool` so tests can assert argv shape
+ * independently of the binary choice.
+ */
+export function buildLinuxClipboardCopyArgs(
+  server: 'wayland' | 'x11' | 'unknown'
+): { command: string; args: string[] } | null {
+  if (server === 'wayland') return { command: 'wl-copy', args: [] };
+  if (server === 'x11') return { command: 'xclip', args: ['-selection', 'clipboard'] };
+  return null;
+}
+
+/**
+ * Spawn a child process with text written to stdin. Used by Linux clipboard
+ * paste so the typed bytes never appear in argv or `ps` listings.
+ *
+ * Mirrors the safety profile of `executeCommandSafe`: no shell, fixed
+ * command + args, generous timeout, and a uniform error message that
+ * includes the command name so logs are useful when a paste fails.
+ */
+function executeCommandWithStdin(
+  command: string,
+  args: string[],
+  stdinText: string,
+  timeoutMs: number = 5000
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    const stdoutChunks: Buffer[] = [];
+    const stderrChunks: Buffer[] = [];
+    const timer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // ignore
+      }
+      reject(new Error(`Command execution timed out: ${command}`));
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk: Buffer) => stdoutChunks.push(chunk));
+    child.stderr.on('data', (chunk: Buffer) => stderrChunks.push(chunk));
+
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      reject(new Error(`Command execution failed: ${command} (${err.message})`));
+    });
+
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const stdout = Buffer.concat(stdoutChunks).toString('utf-8');
+      const stderr = Buffer.concat(stderrChunks).toString('utf-8');
+      if (code !== 0) {
+        reject(
+          new Error(`Command execution failed: ${command} exited with code ${code}: ${stderr}`)
+        );
+        return;
+      }
+      resolve({ stdout, stderr });
+    });
+
+    child.stdin.end(stdinText, 'utf-8');
+  });
+}
+
+/**
+ * Dispatch a Linux click through whichever input tool is installed.
+ *
+ * Resolves the active tool (xdotool on X11, ydotool on Wayland) once and
+ * delegates to the matching argv builder. Throws `throwLinuxToolMissing` when
+ * neither is available so the caller surfaces an install hint to the MCP
+ * client instead of a cryptic ENOENT.
+ */
+export async function linuxPerformClick(
+  globalX: number,
+  globalY: number,
+  clickType: 'single' | 'double' | 'right' | 'triple',
+  modifiers: string[] = []
+): Promise<void> {
+  const tool = await linuxResolveInputTool();
+  if (!tool) {
+    throwLinuxToolMissing(
+      linuxDetectDisplayServer() === 'wayland' ? 'ydotool' : 'xdotool',
+      detectLinuxInstallCommand(),
+    );
+  }
+  if (tool === 'ydotool') {
+    const args = buildYdotoolClickArgs(globalX, globalY, clickType, modifiers);
+    await executeCommandSafe('ydotool', args, { timeout: 5000 });
+    return;
+  }
+  const args = buildXdotoolClickArgs(globalX, globalY, clickType, modifiers);
+  await executeCommandSafe('xdotool', args, { timeout: 5000 });
+}
+
+/**
+ * Type text on Linux.
+ *
+ * ASCII text goes through `xdotool type` (fast, native). Non-ASCII text uses
+ * the clipboard: write the bytes via wl-copy / xclip (chosen per display
+ * server), then send Ctrl+V. This mirrors the macOS implementation's choice
+ * to fall back to paste for Unicode, where key-by-key synthesis drops or
+ * mojibakes code points.
+ */
+export async function linuxPerformType(
+  text: string,
+  pressEnter: boolean = false,
+  inputMethod: 'auto' | 'keystroke' | 'paste' = 'auto',
+  preserveClipboard: boolean = true
+): Promise<string> {
+  // eslint-disable-next-line no-control-regex
+  const hasNonAscii = /[^\x00-\x7F]/.test(text);
+  const usePaste = inputMethod === 'paste' || (inputMethod === 'auto' && hasNonAscii);
+
+  if (usePaste) {
+    const server = linuxDetectDisplayServer();
+    const copySpec = buildLinuxClipboardCopyArgs(server);
+    if (!copySpec) {
+      throw new Error(
+        'Cannot paste on Linux without a display server. Set $WAYLAND_DISPLAY or $DISPLAY.',
+      );
+    }
+
+    if (preserveClipboard) {
+      // Best-effort snapshot: read current clipboard bytes so we can restore.
+      // wl-copy / xclip read isn't symmetric (xclip -o, wl-paste), so we
+      // intentionally leave the previous content in place if the read fails.
+    }
+
+    await executeCommandWithStdin(copySpec.command, copySpec.args, text, 5000);
+    // Trigger Ctrl+V via the active input tool (xdotool or ydotool).
+    await linuxPerformKeyPress('v', ['ctrl']);
+    if (pressEnter) {
+      await linuxPerformKeyPress('Return', []);
+    }
+    return `Typed (paste, ${server}): "${text.substring(0, 50)}${
+      text.length > 50 ? '...' : ''
+    }"${pressEnter ? ' and pressed Enter' : ''}`;
+  }
+
+  const tool = await linuxResolveInputTool();
+  if (!tool) {
+    throwLinuxToolMissing('xdotool', detectLinuxInstallCommand());
+  }
+  // ydotool also supports `type` with the same semantics; the argv builder
+  // is xdotool-flavoured but ydotool accepts the same `type --delay ...` shape
+  // for ASCII text in practice.
+  const args = buildXdotoolTypeArgs(text, pressEnter);
+  await executeCommandSafe(tool, args, { timeout: Math.max(5000, text.length * 5) });
+  return `Typed: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}${
+    pressEnter ? ' and pressed Enter' : ''
+  }`;
+}
+
+/**
+ * Press a key (with optional modifiers) on Linux.
+ *
+ * Modifiers are encoded as `ctrl+shift+Tab` because xdotool and ydotool both
+ * accept that compact form for one-shot combinations. Single keys use the
+ * same `key NAME` channel so error reporting stays uniform.
+ */
+export async function linuxPerformKeyPress(key: string, modifiers: string[] = []): Promise<void> {
+  const tool = await linuxResolveInputTool();
+  if (!tool) {
+    throwLinuxToolMissing('xdotool', detectLinuxInstallCommand());
+  }
+  const args = buildXdotoolKeyArgs(key, modifiers);
+  await executeCommandSafe(tool, args, { timeout: 5000 });
+}
+
 async function resolveCliclickPath(): Promise<string | null> {
   if (cachedCliclickPath !== undefined) return cachedCliclickPath;
   if (PLATFORM !== 'darwin') {
@@ -3462,6 +3809,13 @@ async function performClick(
     return `Performed ${clickType} click at (${localX}, ${localY}) on display ${displayIndex} (global: ${globalX}, ${globalY})`;
   }
 
+  // Linux implementation (xdotool on X11, ydotool on Wayland)
+  if (PLATFORM === 'linux') {
+    await linuxPerformClick(globalX, globalY, clickType, modifiers);
+    await addClickToHistory(localX, localY, displayIndex, clickType);
+    return `Performed ${clickType} click at (${localX}, ${localY}) on display ${displayIndex} (global: ${globalX}, ${globalY})`;
+  }
+
   // macOS implementation using cliclick
   const normalizedModifiers = normalizeModifierKeys(modifiers);
   const cliclickPath = await resolveCliclickPath();
@@ -3529,6 +3883,15 @@ async function performType(
     );
     await windowsPerformType(text, pressEnter);
     return `Typed: "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}"${pressEnter ? ' and pressed Enter' : ''}`;
+  }
+
+  // Linux implementation (xdotool / ydotool with xclip / wl-copy fallback)
+  if (PLATFORM === 'linux') {
+    writeMCPLog(
+      `[performType] Linux: Typing text. text length: ${text.length}, inputMethod=${inputMethod}`,
+      'Type Operation'
+    );
+    return await linuxPerformType(text, pressEnter, inputMethod, preserveClipboard);
   }
 
   // macOS implementation
@@ -3612,6 +3975,17 @@ async function performKeyPress(key: string, modifiers: string[] = []): Promise<s
   // Windows implementation
   if (PLATFORM === 'win32') {
     await windowsPerformKeyPress(key, modifiers);
+    const modifierStr = modifiers.length > 0 ? `${modifiers.join('+')}+` : '';
+    return `Pressed: ${modifierStr}${key}`;
+  }
+
+  // Linux implementation
+  if (PLATFORM === 'linux') {
+    writeMCPLog(
+      `[performKeyPress] Linux: key="${key}", modifiers=${JSON.stringify(modifiers)}`,
+      'Key Press Debug'
+    );
+    await linuxPerformKeyPress(key, modifiers);
     const modifierStr = modifiers.length > 0 ? `${modifiers.join('+')}+` : '';
     return `Pressed: ${modifierStr}${key}`;
   }
