@@ -3424,9 +3424,218 @@ Write-Output "SUCCESS"
 // ============================================================================
 
 /**
+ * Get display configuration on Linux.
+ *
+ * Probes `xrandr` (X11) or `wlr-randr` (Wayland wlroots compositors) when
+ * available, then falls back to a single 1920x1080 display at origin (0, 0).
+ * The fallback is intentional: even without working display-detection tools
+ * the action dispatch needs SOME configuration so coordinate-translation
+ * math doesn't fail. Callers that demand real per-display geometry should
+ * surface a clearer error to the user, but the common single-display case
+ * just works.
+ */
+export async function linuxGetDisplayConfiguration(
+  probe?: (tool: string) => boolean,
+  exec?: (
+    command: string,
+    args: string[],
+    options?: { timeout?: number }
+  ) => Promise<{ stdout: string; stderr: string }>
+): Promise<DisplayConfiguration> {
+  const toolProbe = probe ?? linuxCommandExistsSync;
+  const execFn = exec ?? executeCommandSafe;
+
+  // 1. xrandr on X11 is the most reliable source.
+  if (toolProbe('xrandr')) {
+    try {
+      const { stdout } = await execFn('xrandr', ['--query'], { timeout: 2000 });
+      const parsed = parseXrandrOutput(stdout);
+      if (parsed) return finalizeDisplayConfig(parsed);
+    } catch {
+      // fall through to next probe
+    }
+  }
+
+  // 2. wlr-randr on wlroots-based Wayland compositors (Sway, etc.).
+  if (toolProbe('wlr-randr')) {
+    try {
+      const { stdout } = await execFn('wlr-randr', [], { timeout: 2000 });
+      const parsed = parseWlrRandrOutput(stdout);
+      if (parsed) return finalizeDisplayConfig(parsed);
+    } catch {
+      // fall through to fallback
+    }
+  }
+
+  // 3. Fallback: single 1920x1080 display at origin (0, 0). Lets the
+  //    coordinate math succeed; users on multi-display setups without
+  //    a working detection tool will see clipped coordinates.
+  return finalizeDisplayConfig([
+    { name: 'Display 0', isMain: true, width: 1920, height: 1080, originX: 0, originY: 0 },
+  ]);
+}
+
+/**
+ * Pure parser for `xrandr --query` output.
+ *
+ * Recognizes lines like:
+ *   HDMI-1 connected 1920x1080+0+0 ...
+ *   eDP-1 connected primary 1920x1080+1920+0 ...
+ *   DP-2 disconnected ...
+ *
+ * Exported for testability — the surrounding integration is exercised by
+ * `linuxGetDisplayConfiguration` smoke tests.
+ */
+export function parseXrandrOutput(text: string): RawDisplay[] | null {
+  const displays: RawDisplay[] = [];
+  const re = /(\S+)\s+connected(?:\s+primary)?\s+(\d+)x(\d+)\+(-?\d+)\+(-?\d+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const [, name, w, h, x, y] = match;
+    displays.push({
+      name,
+      isMain: new RegExp(`\\b${name}\\b\\s+connected\\s+primary`).test(text),
+      width: parseInt(w, 10),
+      height: parseInt(h, 10),
+      originX: parseInt(x, 10),
+      originY: parseInt(y, 10),
+    });
+  }
+  return displays.length > 0 ? displays : null;
+}
+
+/**
+ * Pure parser for `wlr-randr` output. Recognizes blocks like:
+ *
+ *   HDMI-A-1 "Philips FTV"
+ *     Position: 0,0
+ *     Resolution: 1920x1080
+ *     Scale Factor: 1.000000
+ *
+ * Returns null when no blocks with both Position and Resolution can be
+ * found, so the caller falls back to xrandr or the synthetic single-display.
+ */
+export function parseWlrRandrOutput(text: string): RawDisplay[] | null {
+  const displays: RawDisplay[] = [];
+  const lines = text.split(/\r?\n/);
+  let current: { name?: string; x?: number; y?: number; w?: number; h?: number } | null = null;
+
+  const flush = () => {
+    if (
+      current &&
+      current.name &&
+      current.w !== undefined &&
+      current.h !== undefined &&
+      current.x !== undefined &&
+      current.y !== undefined
+    ) {
+      displays.push({
+        name: current.name,
+        isMain: false, // wlr-randr doesn't reliably mark a primary; first wins
+        width: current.w,
+        height: current.h,
+        originX: current.x,
+        originY: current.y,
+      });
+    }
+    current = null;
+  };
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    if (line && !line.startsWith(' ') && !line.startsWith('\t')) {
+      // New header line (output name). Flush the previous block.
+      flush();
+      // Header can be:  NAME "description"   or just   NAME
+      const m = /^(\S+)(?:\s+"([^"]*)")?/.exec(line);
+      if (m) current = { name: m[1] };
+    } else if (current) {
+      const pos = /Position:\s*(-?\d+)\s*,\s*(-?\d+)/.exec(line);
+      if (pos) {
+        current.x = parseInt(pos[1], 10);
+        current.y = parseInt(pos[2], 10);
+      }
+      const res = /Resolution:\s*(\d+)x(\d+)/.exec(line);
+      if (res) {
+        current.w = parseInt(res[1], 10);
+        current.h = parseInt(res[2], 10);
+      }
+    }
+  }
+  flush();
+
+  // Mark the first display as the main one — matches xrandr's convention
+  // where "connected primary" is the first; wlr-randr doesn't reliably
+  // surface this and downstream code only needs ONE main.
+  if (displays.length > 0) displays[0].isMain = true;
+  return displays.length > 0 ? displays : null;
+}
+
+/**
+ * Compute DisplayConfiguration fields from a flat list of raw display
+ * geometries (totals + indices). Pure for testability.
+ */
+export function finalizeDisplayConfig(rawDisplays: RawDisplay[]): DisplayConfiguration {
+  if (rawDisplays.length === 0) {
+    // Defensive: caller passed empty input. Return a synthetic single
+    // display so we never emit a zero-display configuration downstream.
+    rawDisplays = [
+      { name: 'Display 0', isMain: true, width: 1920, height: 1080, originX: 0, originY: 0 },
+    ];
+  }
+  let minX = 0;
+  let minY = 0;
+  let maxX = 0;
+  let maxY = 0;
+  let mainIdx = 0;
+  for (const d of rawDisplays) {
+    if (d.originX < minX) minX = d.originX;
+    if (d.originY < minY) minY = d.originY;
+    const right = d.originX + d.width;
+    const bottom = d.originY + d.height;
+    if (right > maxX) maxX = right;
+    if (bottom > maxY) maxY = bottom;
+  }
+  const displays: DisplayInfo[] = rawDisplays.map((d, i) => ({
+    index: i,
+    name: d.name,
+    isMain: d.isMain,
+    width: d.width,
+    height: d.height,
+    originX: d.originX,
+    originY: d.originY,
+    scaleFactor: 1,
+  }));
+  // If nothing claimed main, mark the first.
+  if (!displays.some((d) => d.isMain)) {
+    displays[0].isMain = true;
+    mainIdx = 0;
+  } else {
+    mainIdx = displays.findIndex((d) => d.isMain);
+  }
+  return {
+    displays,
+    totalWidth: maxX - minX,
+    totalHeight: maxY - minY,
+    mainDisplayIndex: mainIdx,
+  };
+}
+
+/** Internal shape used by the Linux parsers before index assignment. */
+interface RawDisplay {
+  name: string;
+  isMain: boolean;
+  width: number;
+  height: number;
+  originX: number;
+  originY: number;
+}
+
+/**
  * Get display configuration using platform-specific methods
  * - macOS: AppleScript/system_profiler
  * - Windows: PowerShell with System.Windows.Forms
+ * - Linux: xrandr / wlr-randr / synthetic fallback (see linuxGetDisplayConfiguration)
  * Returns information about all connected displays
  */
 async function getDisplayConfiguration(): Promise<DisplayConfiguration> {
@@ -3446,6 +3655,20 @@ async function getDisplayConfiguration(): Promise<DisplayConfiguration> {
     } catch (error: unknown) {
       throw new Error(
         `Failed to get display information on Windows: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
+
+  // Linux implementation follows
+  if (PLATFORM === 'linux') {
+    try {
+      const config = await linuxGetDisplayConfiguration();
+      displayConfigCache = config;
+      displayConfigCacheTime = now;
+      return config;
+    } catch (error: unknown) {
+      throw new Error(
+        `Failed to get display information on Linux: ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
