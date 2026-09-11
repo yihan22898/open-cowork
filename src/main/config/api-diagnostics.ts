@@ -215,6 +215,16 @@ function makeAnthropicClient(opts: {
   const auth = opts.useAuthToken
     ? { authToken: opts.effectiveKey }
     : { apiKey: opts.effectiveKey };
+  // DEBUG: log what we're about to send (without leaking the key).
+  const keyFingerprint = opts.effectiveKey
+    ? `${opts.effectiveKey.slice(0, 8)}…(${opts.effectiveKey.length} chars)`
+    : '<empty>';
+  console.log(
+    `[api-diagnostics] makeAnthropicClient: baseURL=${opts.baseUrl} ` +
+      `isMiniMax=${isMiniMax} authMode=${opts.useAuthToken ? 'authToken' : 'apiKey'} ` +
+      `key=${keyFingerprint} ` +
+      `extraHeaders=${isMiniMax ? 'X-Api-Key' : '(none)'}`
+  );
   return isMiniMax
     ? new Anthropic({
         ...base,
@@ -478,6 +488,13 @@ async function stepAuth(input: DiagnosticInput, step: DiagnosticStep): Promise<v
     step.status = 'ok';
   } catch (err) {
     const e = getApiErrorInfo(err);
+
+    // DEBUG: dump full error so we can see exactly what the SDK sent/received.
+    console.log(
+      `[api-diagnostics] FAIL status=${e.status} ` +
+        `error=${JSON.stringify(e)} ` +
+        `rawErr=${err instanceof Error ? err.message : String(err)}`
+    );
 
     if (e.status === 404) {
       // Many OpenAI-compatible providers (e.g. Alibaba DashScope) don't
