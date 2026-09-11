@@ -251,6 +251,16 @@ async function waitForDevServer(url: string, maxAttempts = 30, intervalMs = 500)
 const isDev = !!process.env.VITE_DEV_SERVER_URL;
 const ELECTRON_DEVTOOLS_DEBUG_PORT = '9223';
 
+// On Linux, the Chromium SUID sandbox helper is often misconfigured (e.g.
+// inside AppImages, unprivileged containers, or VMs that don't ship the
+// proper setuid bit). Without --no-sandbox Electron fails to start with
+// "The SUID sandbox helper binary was found, but is not configured
+// correctly". We disable the sandbox only on Linux so double-clicking the
+// AppImage works without a wrapper script or terminal command.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('no-sandbox');
+}
+
 // Enable Chrome DevTools Protocol in dev mode so the renderer can be inspected
 // via chrome://inspect or connected to by Puppeteer/Playwright at localhost:9223.
 // Chrome MCP uses 9222, so keep Electron on a separate port in development.
