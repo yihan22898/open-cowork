@@ -218,7 +218,7 @@ describe('runPreflight', () => {
     expect(issue).not.toBeNull();
     expect(issue?.resource).toBe('Linux GUI Tools');
     expect(issue?.message).toContain('xdotool');
-    expect(issue?.message).toContain('sudo apt install xdotool');
+    expect(issue?.message).toContain('npm run setup:linux-gui');
   });
 
   it('returns a warning when only grim is missing', async () => {
@@ -226,7 +226,7 @@ describe('runPreflight', () => {
     const issue = check((tool) => tool === 'xdotool');
     expect(issue).not.toBeNull();
     expect(issue?.message).toContain('grim');
-    expect(issue?.message).toContain('sudo apt install grim');
+    expect(issue?.message).toContain('npm run setup:linux-gui');
   });
 
   it('returns one combined warning (not two) when both tools are missing', async () => {

@@ -87,6 +87,6 @@ export function checkLinuxGuiTools(
     severity: 'warning',
     message:
       `Missing system tools: ${missing.join(', ')}. ` +
-      `Install with: sudo apt install ${missing.join(' ')}`,
+      `Run \`npm run setup:linux-gui\` (or \`sudo apt install ${missing.join(' ')}\`) to fix.`,
   };
 }

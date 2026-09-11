@@ -322,14 +322,21 @@ Yes. Open Cowork itself is completely free and open-source under the MIT license
 **Does Open Cowork work on Linux?**
 Yes — Open Cowork ships a Linux `.AppImage` for x64 systems, alongside the Windows `.exe` and macOS `.dmg`. Download the latest `Open Cowork-<version>-linux-x64.AppImage` from the [Releases Page](https://github.com/OpenCoworkAI/open-cowork/releases), make it executable (`chmod +x Open\ Cowork-*.AppImage`), and run it. For VM-level sandbox isolation, install Docker (or Podman) — Open Cowork auto-detects it and runs all commands inside the `opencowork/sandbox:latest` container.
 
-**Linux GUI automation prerequisites:** Open Cowork's computer-use features (clicking, typing, key presses, screenshots) need a few system tools on `$PATH` on the host. The preflight check at startup will warn if any are missing; install the minimum set for your session:
+**Linux GUI automation prerequisites:** Open Cowork's computer-use features (clicking, typing, key presses, screenshots) need a few system tools on `$PATH` on the host. The preflight check at startup will warn if any are missing.
 
-| Display server | Required                  | Recommended for Wayland         |
-| -------------- | ------------------------- | ------------------------------- |
-| **X11**        | `xdotool`, `grim` (or `scrot`) | —                          |
-| **Wayland**    | `grim` (or `gnome-screenshot`) | `ydotool` + the `ydotoold` daemon |
+The fastest path is the bundled setup script — it detects your distro and display server, installs the right packages, and starts the `ydotoold` daemon on Wayland:
 
-Install on common families:
+```bash
+npm run setup:linux-gui          # install
+npm run setup:linux-gui:check    # dry-run; report missing tools
+```
+
+For reference, the per-distro commands are:
+
+| Display server | Required                                            | Recommended for Wayland                |
+| -------------- | --------------------------------------------------- | -------------------------------------- |
+| **X11**        | `xdotool`, `grim` (or `scrot`)                      | —                                      |
+| **Wayland**    | `grim` (or `gnome-screenshot`)                      | `ydotool` + the `ydotoold` daemon      |
 
 ```bash
 # Debian / Ubuntu

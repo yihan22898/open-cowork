@@ -51,6 +51,8 @@
     "postinstall": "patch-package && node scripts/download-node.js && npm run rebuild",
     "prepare": "husky",
     "prepare:gui-tools": "node scripts/prepare-gui-tools.js",
+    "setup:linux-gui": "bash scripts/setup-linux-gui.sh",
+    "setup:linux-gui:check": "bash scripts/setup-linux-gui.sh --check",
     "prepare:python": "node scripts/prepare-python.js",
     "prepare:python:all": "node scripts/prepare-python.js --all",
     "preview": "vite preview",
