@@ -44,10 +44,52 @@ writeMCPLog(`Platform detected: ${PLATFORM}`, 'Bootstrap');
 // Use platform-appropriate paths:
 // - macOS: ~/Library/Application Support/open-cowork
 // - Windows: %APPDATA%/open-cowork
+// - Linux:   $XDG_DATA_HOME/open-cowork (with default ~/.local/share/open-cowork)
+//
+// Exported `resolveLinuxDataDir` enforces three guards on $XDG_DATA_HOME so a
+// misconfigured or hostile env var cannot redirect persistent state outside
+// the user's home: relative paths and values containing '..' segments fall
+// back to the default, and values that resolve outside $HOME do the same.
+/**
+ * Resolve Open Cowork's persistent data directory on Linux to an
+ * XDG-compliant path (`$XDG_DATA_HOME/open-cowork`, with a default of
+ * `~/.local/share/open-cowork`).
+ *
+ * Two guards on `$XDG_DATA_HOME`:
+ *   1. Reject relative paths.
+ *   2. Reject values containing `..` segments.
+ *
+ * Any guard failure or an unset env falls back to the default.
+ *
+ * Note: a third "must resolve under $HOME" guard was considered and rejected
+ * because the XDG Base Directory Specification explicitly allows
+ * `XDG_DATA_HOME` to point anywhere on the filesystem (e.g. a separate
+ * partition mounted at `/mnt/data`). The two guards above are sufficient to
+ * block path-injection from an attacker-controlled env var while preserving
+ * legitimate use cases.
+ */
+export function resolveLinuxDataDir(env: NodeJS.ProcessEnv, homedir: string): string {
+  // Use path.posix throughout: the XDG spec is posix-only, and on a Windows
+  // host (e.g. CI for a non-Linux maintainer) `path.join('/home/user', ...)`
+  // would silently coerce the leading slash into a drive-relative path and
+  // mask the bug we are guarding against.
+  const defaultDir = path.posix.join(homedir, '.local', 'share', 'open-cowork');
+  const xdg = env.XDG_DATA_HOME;
+  if (typeof xdg !== 'string' || xdg.length === 0) {
+    return defaultDir;
+  }
+  if (!path.posix.isAbsolute(xdg) || xdg.includes('..')) {
+    return defaultDir;
+  }
+  return path.posix.join(xdg, 'open-cowork');
+}
+
 const OPEN_COWORK_DATA_DIR =
   PLATFORM === 'win32'
     ? path.join(process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'), 'open-cowork')
-    : path.join(os.homedir(), 'Library', 'Application Support', 'open-cowork');
+    : PLATFORM === 'darwin'
+    ? path.join(os.homedir(), 'Library', 'Application Support', 'open-cowork')
+    : resolveLinuxDataDir(process.env, os.homedir());
 
 // Directory for storing GUI operate files (screenshots, etc.)
 const GUI_OPERATE_DIR = path.join(OPEN_COWORK_DATA_DIR, 'gui_operate');
@@ -859,6 +901,190 @@ async function resolveBundledExecutable(relativeFromResources: string): Promise<
 }
 
 let cachedCliclickPath: string | null | undefined;
+
+/**
+ * Probe whether an executable is on PATH (Linux only).
+ *
+ * Uses `executeCommandSafe` with `execFile`, so the tool name is passed as an
+ * argv element rather than interpolated through a shell — required for the
+ * security guard in P3 (no shell injection from untrusted tool names).
+ *
+ * Returns true when `which` prints a non-empty path, false on any failure
+ * (command missing, timeout, non-zero exit). Result is cached per (process,
+ * tool) so repeated action dispatch does not re-fork on every call.
+ */
+export async function linuxCommandExists(tool: string): Promise<boolean> {
+  try {
+    const { stdout } = await executeCommandSafe('which', [tool], { timeout: 2000 });
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Detect the active Linux display server from environment variables.
+ *
+ * Per the freedesktop conventions:
+ *   - WAYLAND_DISPLAY set -> a Wayland compositor is reachable.
+ *   - DISPLAY set and WAYLAND_DISPLAY not set -> X11 is reachable.
+ *   - Neither set -> no GUI session is attached (headless container, SSH
+ *     session without X forwarding, etc.).
+ *
+ * Returns 'wayland' over 'x11' when both are set; a session that has a
+ * Wayland socket should be addressed through Wayland-first tools (ydotool,
+ * grim) rather than X11 tools that may also be installed for compatibility.
+ */
+export function linuxDetectDisplayServer(): 'wayland' | 'x11' | 'unknown' {
+  if (process.env.WAYLAND_DISPLAY) return 'wayland';
+  if (process.env.DISPLAY) return 'x11';
+  return 'unknown';
+}
+
+/**
+ * Pick the input-synthesis tool for a given display server + available tools.
+ *
+ * Pure function so callers (and tests) can exercise the priority logic
+ * without mocking child_process / filesystem. The async
+ * `linuxResolveInputTool` wrapper composes this with `linuxDetectDisplayServer`
+ * and `linuxCommandExists`.
+ */
+export function selectLinuxInputTool(
+  server: 'wayland' | 'x11' | 'unknown',
+  availableTools: ReadonlySet<string>,
+): 'xdotool' | 'ydotool' | null {
+  if (server === 'wayland' && availableTools.has('ydotool')) return 'ydotool';
+  if (server === 'x11' && availableTools.has('xdotool')) return 'xdotool';
+  return null;
+}
+
+/**
+ * Pick the screenshot tool for a given display server + available tools.
+ *
+ * Pure function — see `selectLinuxInputTool` for the rationale.
+ */
+export function selectLinuxScreenshotTool(
+  server: 'wayland' | 'x11' | 'unknown',
+  availableTools: ReadonlySet<string>,
+): 'grim' | 'scrot' | 'gnome-screenshot' | null {
+  if (server === 'wayland') {
+    if (availableTools.has('grim')) return 'grim';
+    if (availableTools.has('gnome-screenshot')) return 'gnome-screenshot';
+    return null;
+  }
+  if (server === 'x11') {
+    if (availableTools.has('scrot')) return 'scrot';
+    if (availableTools.has('gnome-screenshot')) return 'gnome-screenshot';
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Resolve the input-synthesis tool available for the current display server.
+ *
+ * - Wayland -> ydotool (requires the ydotoold daemon to be running).
+ * - X11     -> xdotool.
+ * - unknown display server -> null (caller should report a clear error).
+ *
+ * Returns null when the preferred tool is not installed, rather than
+ * transparently falling back to a tool that may not be able to drive the
+ * active session. Callers are responsible for surfacing the install hint via
+ * throwLinuxToolMissing.
+ */
+export async function linuxResolveInputTool(): Promise<'xdotool' | 'ydotool' | null> {
+  const server = linuxDetectDisplayServer();
+  const available = new Set<string>();
+  for (const tool of ['xdotool', 'ydotool'] as const) {
+    if (await linuxCommandExists(tool)) available.add(tool);
+  }
+  return selectLinuxInputTool(server, available);
+}
+
+/**
+ * Resolve the screenshot tool available for the current display server.
+ *
+ * Preference order:
+ *   - Wayland: grim (wlroots-native) > gnome-screenshot (works on GNOME Wayland).
+ *   - X11:     scrot (X11-native, widely packaged) > gnome-screenshot.
+ *   - unknown display server -> null.
+ *
+ * Returns null when no candidate is installed so the caller can report a
+ * single error covering all missing tools, rather than silently picking the
+ * first missing one and confusing the user.
+ */
+export async function linuxResolveScreenshotTool(): Promise<
+  'grim' | 'scrot' | 'gnome-screenshot' | null
+> {
+  const server = linuxDetectDisplayServer();
+  const available = new Set<string>();
+  for (const tool of ['grim', 'scrot', 'gnome-screenshot'] as const) {
+    if (await linuxCommandExists(tool)) available.add(tool);
+  }
+  return selectLinuxScreenshotTool(server, available);
+}
+
+/**
+ * Throw a descriptive error when a Linux GUI tool is missing.
+ *
+ * The message names the tool and the install command so the caller (an MCP
+ * client in an AI agent loop) can install it without having to guess the
+ * package name on the user's distro. The shape mirrors the existing macOS
+ * `cliclick` missing-tool error.
+ */
+export function throwLinuxToolMissing(tool: string, installCmd: string): never {
+  throw new Error(
+    `Linux GUI tool '${tool}' is required but was not found.\n` +
+      `- Install: ${installCmd}\n` +
+      '- Or add the executable directory to $PATH and try again.',
+  );
+}
+
+/**
+ * Parse /etc/os-release content and return a one-line install command for the
+ * GUI automation toolchain.
+ *
+ * Pure function so unit tests can exercise the distro-detection logic
+ * without touching the filesystem. ID_LIKE is the right field to match
+ * against because Debian/Ubuntu-derived distros set both ID=debian and
+ * ID_LIKE=debian, while downstream distros (Pop!_OS, Linux Mint) often set
+ * only ID_LIKE=debian.
+ *
+ * Falls back to `apt` for an unrecognized distro family; apt is the most
+ * widely documented install path and the one already linked from the README.
+ */
+export function parseLinuxOsRelease(contents: string): string {
+  const idLike = contents.match(/^ID_LIKE=(.+)$/m)?.[1] ?? '';
+  if (idLike.includes('debian') || idLike.includes('ubuntu')) {
+    return 'sudo apt install xdotool grim';
+  }
+  if (idLike.includes('rhel') || idLike.includes('fedora')) {
+    return 'sudo dnf install xdotool grim';
+  }
+  if (idLike.includes('arch')) {
+    return 'sudo pacman -S xdotool grim';
+  }
+  if (idLike.includes('suse')) {
+    return 'sudo zypper install xdotool grim';
+  }
+  return 'sudo apt install xdotool grim';
+}
+
+/**
+ * Detect the Linux distribution's package manager and return a one-line
+ * install command. Reads /etc/os-release; falls back to `apt` when the file
+ * is missing (CI containers, macOS dev hosts, etc.).
+ */
+export function detectLinuxInstallCommand(): string {
+  try {
+    return parseLinuxOsRelease(fsSync.readFileSync('/etc/os-release', 'utf8'));
+  } catch {
+    // /etc/os-release unreadable — macOS dev hosts, Windows CI, distros that
+    // ship it under a different path. The README's apt-based instructions are
+    // the safest default to surface.
+    return parseLinuxOsRelease('');
+  }
+}
 
 async function resolveCliclickPath(): Promise<string | null> {
   if (cachedCliclickPath !== undefined) return cachedCliclickPath;
