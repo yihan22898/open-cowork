@@ -987,6 +987,62 @@ function linuxGuiDebug(msg: string): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Detailed, structured trace log for Linux GUI work — separate file, separate
+// purpose from `linuxGuiDebug`.
+//
+// `gui-linux-debug.log` is a quick-look breadcrumb ("which tool was tried,
+// what did it say"). `gui-linux-detailed.log` is the file you open when you
+// need to see EVERYTHING that happened: full subprocess command+argv+env,
+// stdout/stderr bytes, duration, retry attempts, vision-API request/response
+// sizes, screenshot dimensions. Best-effort, non-blocking, never throws.
+//
+// Intentionally does NOT share writers with `linuxGuiDebug` so the user can
+// tail one file or the other without cross-contamination, and so removing or
+// changing the breadcrumbs later cannot regress the detail trace.
+// ---------------------------------------------------------------------------
+let linuxGuiDetailedPath: string | null = null;
+function ensureLinuxGuiDetailedPath(): string | null {
+  if (linuxGuiDetailedPath !== null) return linuxGuiDetailedPath;
+  try {
+    const logDir =
+      process.env.OPEN_COWORK_LOG_DIR ||
+      path.join(process.env.HOME || os.tmpdir(), '.config', 'open-cowork', 'logs');
+    fsSync.mkdirSync(logDir, { recursive: true });
+    linuxGuiDetailedPath = path.join(logDir, 'gui-linux-detailed.log');
+    return linuxGuiDetailedPath;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Append a single structured line to `gui-linux-detailed.log`. Format:
+ *
+ *   [2026-09-14T08:23:41.123Z] [tag] key=value key=value ...
+ *
+ * Use the `tag` to group related lines (e.g. `subprocess`, `screenshot`,
+ * `vision`). Best-effort: silent on failure.
+ */
+function linuxGuiDetailed(tag: string, fields: Record<string, unknown>): void {
+  const p = ensureLinuxGuiDetailedPath();
+  if (!p) return;
+  const ts = new Date().toISOString();
+  const parts: string[] = [];
+  for (const [k, v] of Object.entries(fields)) {
+    if (v === undefined || v === null) continue;
+    const s = typeof v === 'string' ? v : JSON.stringify(v);
+    // Collapse newlines so each record stays on one line — easier to grep.
+    parts.push(`${k}=${s.replace(/\r?\n/g, '\\n')}`);
+  }
+  const line = `[${ts}] [${tag}] ${parts.join(' ')}\n`;
+  try {
+    fsSync.appendFileSync(p, line);
+  } catch {
+    // best-effort
+  }
+}
+
 export async function linuxCommandExists(tool: string): Promise<boolean> {
   try {
     const { stdout } = await executeCommandSafe('which', [tool], { timeout: 2000 });
@@ -1794,6 +1850,16 @@ export async function linuxTakeScreenshot(
         (region ? ` region=${JSON.stringify(region)}` : '') +
         ` (session=${session} desktop=${process.env.XDG_CURRENT_DESKTOP || '(unset)'})`,
     );
+    const screenStartedAt = Date.now();
+    linuxGuiDetailed('screenshot.attempt', {
+      tool,
+      output_path: outputPath,
+      region: region || null,
+      session,
+      desktop: process.env.XDG_CURRENT_DESKTOP || '(unset)',
+      attempt_index: tried.length,
+      installed_order: order.filter(t => installed.includes(t)),
+    });
     try {
       await linuxTakeScreenshotWithTool(tool, outputPath, region);
       // Sanity-check the captured image: a near-empty file or all-black PNG
@@ -1805,14 +1871,33 @@ export async function linuxTakeScreenshot(
       if (!stat || stat.size < 1024) {
         const sizeNote = stat ? `${stat.size}B` : 'missing';
         linuxGuiDebug(`screenshot → ${tool} returned empty file (${sizeNote}) — trying next tool`);
+        linuxGuiDetailed('screenshot.empty', {
+          tool,
+          output_path: outputPath,
+          size_bytes: stat?.size ?? 0,
+          duration_ms: Date.now() - screenStartedAt,
+        });
         lastErr = new Error(`${tool} produced empty screenshot (${sizeNote})`);
         continue;
       }
       linuxGuiDebug(`screenshot → ${tool} OK (tried=${tried.join('→')}, size=${stat.size}B)`);
+      linuxGuiDetailed('screenshot.success', {
+        tool,
+        output_path: outputPath,
+        size_bytes: stat.size,
+        duration_ms: Date.now() - screenStartedAt,
+        tried,
+      });
       return;
     } catch (err) {
       const msg = (err as Error).message;
       linuxGuiDebug(`screenshot → ${tool} FAILED: ${msg.replace(/\n/g, ' | ')}`);
+      linuxGuiDetailed('screenshot.fail', {
+        tool,
+        output_path: outputPath,
+        duration_ms: Date.now() - screenStartedAt,
+        error_message: msg,
+      });
       lastErr = err;
     }
   }
@@ -2536,25 +2621,78 @@ async function executeCommandSafe(
   args: string[],
   options?: { timeout?: number }
 ): Promise<{ stdout: string; stderr: string }> {
+  const timeoutMs = options?.timeout || 30000;
+  const startedAt = Date.now();
+  // Detailed trace: log every spawn on Linux so the user can see the full
+  // argv + environment slice that was passed to the child. macOS/Windows
+  // writes nothing — the detailed log is Linux-only by design.
+  if (PLATFORM === 'linux') {
+    linuxGuiDetailed('subprocess.spawn', {
+      command,
+      args,
+      timeout_ms: timeoutMs,
+      env_keys:
+        Object.keys(process.env).length // count only — values may contain secrets
+          ? Object.keys(process.env).sort()
+          : [],
+      platform: `${os.platform()} ${os.release()}`,
+      cwd: process.cwd(),
+    });
+  }
   try {
-    const result = await execFileAsync(command, args, { timeout: options?.timeout || 30000 });
+    const result = await execFileAsync(command, args, { timeout: timeoutMs });
+    const durationMs = Date.now() - startedAt;
+    // Normalize to strings once so the rest of the function and the trace
+    // log see a single shape regardless of which execFileAsync variant was
+    // returned. stdio defaults to `'pipe'`, so this is always a string.
+    const stdoutStr = typeof result.stdout === 'string' ? result.stdout : '';
+    const stderrStr = typeof result.stderr === 'string' ? result.stderr : '';
+    if (PLATFORM === 'linux') {
+      // Note: stdout/stderr may contain large base64 image data for some
+      // tools. We log the BYTE LENGTH, not the bytes, to keep the log small.
+      // Full bytes get logged only on error (below) where the user actually
+      // needs to see them.
+      linuxGuiDetailed('subprocess.exit', {
+        command,
+        args,
+        exit_code: 0,
+        duration_ms: durationMs,
+        stdout_bytes: Buffer.byteLength(stdoutStr, 'utf8'),
+        stderr_bytes: Buffer.byteLength(stderrStr, 'utf8'),
+      });
+    }
     return {
-      stdout: typeof result.stdout === 'string' ? result.stdout : '',
-      stderr: typeof result.stderr === 'string' ? result.stderr : '',
+      stdout: stdoutStr,
+      stderr: stderrStr,
     };
   } catch (error: unknown) {
     // On Linux GUI tools, surface the real stderr so the cause is visible
     // in `npm run dev` (e.g. "wlr-screencopy-unstable-v1 not supported",
     // "xdotool: unable to open display"). We only log on Linux to avoid
     // noise on macOS/Windows.
+    const anyErr = error as { stderr?: string; code?: string; signal?: string };
+    const stderr = (anyErr?.stderr || '').toString().trim();
+    const exit = anyErr?.code ?? '(unknown)';
+    const durationMs = Date.now() - startedAt;
     if (PLATFORM === 'linux') {
-      const anyErr = error as { stderr?: string; code?: string; signal?: string };
-      const stderr = (anyErr?.stderr || '').toString().trim();
-      const exit = anyErr?.code ?? '(unknown)';
       linuxGuiDebug(
         `exec FAILED: ${command} ${args.join(' ')} → exit=${exit}` +
           (stderr ? ` stderr="${stderr.replace(/\n/g, ' | ')}"` : '')
       );
+      // Detailed trace: on failure, log the FULL stderr (and stdout if any
+      // was emitted before the exit) — this is the breadcrumb the user
+      // actually opens the detailed log for.
+      const stdout = (anyErr && (anyErr as { stdout?: string }).stdout) || '';
+      linuxGuiDetailed('subprocess.error', {
+        command,
+        args,
+        exit_code: exit,
+        signal: anyErr?.signal,
+        duration_ms: durationMs,
+        stderr,
+        stdout: typeof stdout === 'string' ? stdout.trim() : '',
+        error_message: error instanceof Error ? error.message : String(error),
+      });
     }
     throw new Error(
       `Command execution failed: ${error instanceof Error ? error.message : String(error)}`
@@ -5406,6 +5544,21 @@ async function callVisionAPI(
   let compatibilityFallbackUsed = false;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    const attemptStartedAt = Date.now();
+    // Detailed trace: capture request size + metadata for each attempt.
+    // Helpful when the AI returns prose instead of JSON — you can see
+    // whether the prompt was truncated, image was tiny, etc.
+    if (PLATFORM === 'linux') {
+      linuxGuiDetailed('vision.attempt', {
+        function_name: functionName || '(unknown)',
+        attempt,
+        max_retries: MAX_RETRIES,
+        max_tokens: maxTokens,
+        timeout_ms: TIMEOUT_MS,
+        prompt_chars: prompt.length,
+        image_base64_bytes: Buffer.byteLength(base64Image, 'utf8'),
+      });
+    }
     try {
       writeMCPLog(
         `${logPrefix} Attempt ${attempt}/${MAX_RETRIES} - Starting API call`,
@@ -5421,10 +5574,29 @@ async function callVisionAPI(
       );
 
       writeMCPLog(`${logPrefix} Attempt ${attempt}/${MAX_RETRIES} - Success`, 'API Request');
+      if (PLATFORM === 'linux') {
+        linuxGuiDetailed('vision.success', {
+          function_name: functionName || '(unknown)',
+          attempt,
+          duration_ms: Date.now() - attemptStartedAt,
+          response_chars: result.length,
+          response_preview: result.substring(0, 200),
+        });
+      }
       return result;
     } catch (error: unknown) {
       const isLastAttempt = attempt === MAX_RETRIES;
       const errorMessage = String(error instanceof Error ? error.message : error || '');
+      if (PLATFORM === 'linux') {
+        linuxGuiDetailed('vision.error', {
+          function_name: functionName || '(unknown)',
+          attempt,
+          duration_ms: Date.now() - attemptStartedAt,
+          is_last_attempt: isLastAttempt,
+          is_request_shape_error: isVisionRequestShapeError(errorMessage),
+          error_message: errorMessage.substring(0, 1000),
+        });
+      }
 
       // Deterministic request-shape errors should fail fast instead of wasting retries.
       if (isVisionRequestShapeError(errorMessage)) {
@@ -5605,6 +5777,18 @@ async function callVisionAPIWithTimeout(
     `[Vision Routing] function=${functionName || '(unknown)'} route=${selectedRoute} host=${getBaseUrlHost(baseUrl)} model=${model}${previousErrorMessage ? ` previousError=${previousErrorMessage}` : ''}`,
     'Vision Routing'
   );
+  // Detailed trace: which provider/route was actually chosen. Useful when
+  // debugging "vision returns prose not JSON" — the model id tells you
+  // whether the call even reached the right backend.
+  if (PLATFORM === 'linux') {
+    linuxGuiDetailed('vision.route', {
+      function_name: functionName || '(unknown)',
+      route: selectedRoute,
+      host: getBaseUrlHost(baseUrl),
+      model,
+      compatibility_mode: !!compatibilityMode,
+    });
+  }
 
   const selectedApiKey = pickVisionApiKey(
     selectedRoute,
