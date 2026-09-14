@@ -1092,6 +1092,107 @@ export function linuxDetectDisplayServer(): 'wayland' | 'x11' | 'unknown' {
 }
 
 /**
+ * Heuristic: is this Linux VM running on VMware? Reads the SMBIOS
+ * system vendor (via /sys/class/dmi/id, which is world-readable on
+ * Linux without root) and matches against the strings VMware emits.
+ *
+ * The result drives user-facing hints: VMware's virtual Wayland lacks
+ * `wlr-screencopy-unstable-v1` (so grim always fails), and its virtual
+ * input devices route through evdev, not through the Wayland
+ * input-method protocols — meaning ydotool is the only way to drive
+ * native Wayland apps. Knowing we're on VMware lets us surface a
+ * targeted next step instead of a generic "everything is broken".
+ */
+export function linuxDetectVMware(): boolean {
+  try {
+    const vendor = fsSync
+      .readFileSync('/sys/class/dmi/id/sys_vendor', 'utf-8')
+      .trim()
+      .toLowerCase();
+    const product = fsSync
+      .readFileSync('/sys/class/dmi/id/product_name', 'utf-8')
+      .trim()
+      .toLowerCase();
+    return /vmware/.test(vendor) || /vmware/.test(product);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Is the `ydotoold` user daemon actually running? The daemon listens on
+ * a UNIX socket under /tmp; checking `pgrep -x ydotoold` is a cheap
+ * proxy that's enough to decide whether ydotool CLI calls will succeed.
+ *
+ * Used by the click/keypress fallback chain: if the user has the binary
+ * but not the daemon, we attempt to start the daemon in the background
+ * before retrying, so the user only has to set this up once.
+ */
+export async function linuxIsYdotooldRunning(): Promise<boolean> {
+  try {
+    const { stdout } = await executeCommandSafe('pgrep', ['-x', 'ydotoold'], { timeout: 1500 });
+    return stdout.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Best-effort attempt to start `ydotoold` in the background.
+ *
+ * ydotoold needs to read/write /dev/uinput, which requires either
+ * CAP_SYS_ADMIN capability or root. We can't grant capabilities from
+ * inside the Electron app, so this will silently fail on a stock
+ * distro install — but we still try, because some users DO set
+ * `setcap cap_sys_admin+ep $(which ydotoold)` once and forget.
+ *
+ * Returns true if the daemon was launched (we don't wait to confirm
+ * the socket came up — pgrep in the retry will tell us). Returns
+ * false on any failure (binary missing, permission denied, fork
+ * failed) with the cause logged to the debug stream.
+ */
+export async function linuxAutoStartYdotoold(): Promise<boolean> {
+  try {
+    // Locate the binary explicitly; PATH may be inherited from a shell
+    // where ydotoold isn't on it (e.g. systemd user services).
+    const { stdout: whichOut } = await executeCommandSafe('which', ['ydotoold'], {
+      timeout: 1500,
+    });
+    const bin = whichOut.trim();
+    if (!bin) {
+      linuxGuiDebug('auto-start ydotoold → binary not on $PATH, skipping');
+      return false;
+    }
+    // setsid detaches the child from our controlling terminal so it
+    // survives if the Electron app is killed (e.g. user quits, devtools
+    // reload). stdio 'ignore' prevents any FD inheritance from
+    // interfering with the daemon.
+    const child = spawn(bin, [], {
+      detached: true,
+      stdio: 'ignore',
+    });
+    child.unref();
+    // Give the daemon a moment to bind its socket so the next pgrep
+    // sees it. 300ms is empirically enough on every distro we've
+    // tested — `ydotoold` is tiny and uses lazy socket binding.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const running = await linuxIsYdotooldRunning();
+    linuxGuiDebug(`auto-start ydotoold → launched=${bin} daemon-up=${running}`);
+    if (PLATFORM === 'linux') {
+      linuxGuiDetailed('ydotoold.auto_start', { bin, daemon_up: running });
+    }
+    return running;
+  } catch (err) {
+    const msg = (err as Error).message;
+    linuxGuiDebug(`auto-start ydotoold → FAILED: ${msg}`);
+    if (PLATFORM === 'linux') {
+      linuxGuiDetailed('ydotoold.auto_start_fail', { error_message: msg });
+    }
+    return false;
+  }
+}
+
+/**
  * Pick the input-synthesis tool for a given display server + available tools.
  *
  * Pure function so callers (and tests) can exercise the priority logic
@@ -1191,17 +1292,39 @@ export function explainLinuxInputFailure(
       lower.includes('no such file') ||
       lower.includes('ydotoold'))
   ) {
+    const vmwareHint = linuxDetectVMware()
+      ? ` VMware's virtual Wayland has no wlr-screencopy and no native input method; ` +
+        `without ydotoold you cannot drive native Wayland apps. Easiest path: log out ` +
+        `and log back in selecting "Ubuntu on Xorg" at the session chooser.`
+      : '';
     return (
       `ydotoold user daemon is not running. Start it: ` +
       `\`systemctl --user enable --now ydotoold\` (or run \`sudo setcap ` +
-      `cap_sys_admin+ep $(which ydotoold)\` first if it can't access /dev/uinput). ` +
-      `Underlying error: ${raw}`
+      `cap_sys_admin+ep $(which ydotoold)\` first if it can't access /dev/uinput).` +
+      vmwareHint +
+      ` Underlying error: ${raw}`
     );
   }
   if (firstTool === 'xdotool' && lower.includes('unable to open display')) {
     return (
       `xdotool cannot open the X display ($DISPLAY=${process.env.DISPLAY || '(unset)'}). ` +
       `On Wayland sessions xdotool needs XWayland (usually available). ` +
+      `Underlying error: ${raw}`
+    );
+  }
+  // xdotool "succeeded" on Wayland but the user can't see the click — almost
+  // always because the target window is a native Wayland app (GNOME Calculator,
+  // GNOME Text Editor, Firefox in native mode, ...) and XWayland can't reach it.
+  if (
+    firstTool === 'ydotool' &&
+    linuxDetectDisplayServer() === 'wayland'
+  ) {
+    return (
+      `Both ydotool and xdotool were tried on Wayland. If xdotool "succeeded" but ` +
+      `nothing visibly happened, the target is almost certainly a NATIVE Wayland ` +
+      `window (e.g. GNOME Calculator, GNOME Text Editor, Firefox with ` +
+      `widget.gtk.use-x11=false) — xdotool can only reach X11/XWayland apps. ` +
+      `Fix: start ydotoold (see above) or log out and re-login as "Ubuntu on Xorg". ` +
       `Underlying error: ${raw}`
     );
   }
@@ -1572,6 +1695,7 @@ export async function linuxPerformClick(
         : (available as Array<'ydotool' | 'xdotool'>);
   const tried: Array<'ydotool' | 'xdotool'> = [];
   let lastErr: unknown;
+  let ydotooldAutoStarted = false;
   for (const tool of ordered) {
     tried.push(tool);
     const args =
@@ -1587,6 +1711,33 @@ export async function linuxPerformClick(
       const msg = (err as Error).message;
       linuxGuiDebug(`click → ${tool} FAILED: ${msg.replace(/\n/g, ' | ')}`);
       lastErr = err;
+      // ydotool failed on Wayland — if ydotoold isn't running, try to
+      // bring it up once, then retry the SAME ydotool call before
+      // falling back to xdotool. xdotool can only reach X11/XWayland
+      // apps, so silently swapping it in causes the "click 'succeeded'
+      // but nothing happened" experience that the user keeps reporting.
+      if (
+        tool === 'ydotool' &&
+        session === 'wayland' &&
+        !ydotooldAutoStarted &&
+        !(await linuxIsYdotooldRunning())
+      ) {
+        linuxGuiDebug('click → ydotool failed and ydotoold is down — attempting auto-start');
+        const started = await linuxAutoStartYdotoold();
+        if (started) {
+          ydotooldAutoStarted = true;
+          linuxGuiDebug('click → ydotoold auto-started, retrying ydotool');
+          try {
+            await executeCommandSafe('ydotool', args, { timeout: 5000 });
+            linuxGuiDebug(`click → ydotool OK after auto-start (tried=${tried.join('→')})`);
+            return;
+          } catch (retryErr) {
+            const retryMsg = (retryErr as Error).message;
+            linuxGuiDebug(`click → ydotool still FAILED after auto-start: ${retryMsg.replace(/\n/g, ' | ')}`);
+            lastErr = retryErr;
+          }
+        }
+      }
     }
   }
   throw new Error(
@@ -1679,6 +1830,7 @@ export async function linuxPerformKeyPress(key: string, modifiers: string[] = []
         : (available as Array<'ydotool' | 'xdotool'>);
   const tried: Array<'ydotool' | 'xdotool'> = [];
   let lastErr: unknown;
+  let ydotooldAutoStarted = false;
   for (const tool of ordered) {
     tried.push(tool);
     const args = buildXdotoolKeyArgs(key, modifiers);
@@ -1691,6 +1843,31 @@ export async function linuxPerformKeyPress(key: string, modifiers: string[] = []
       const msg = (err as Error).message;
       linuxGuiDebug(`key_press → ${tool} FAILED: ${msg.replace(/\n/g, ' | ')}`);
       lastErr = err;
+      // Same auto-start logic as linuxPerformClick: if ydotool fails on
+      // Wayland because ydotoold is down, try to bring it up and retry
+      // before falling through to xdotool.
+      if (
+        tool === 'ydotool' &&
+        session === 'wayland' &&
+        !ydotooldAutoStarted &&
+        !(await linuxIsYdotooldRunning())
+      ) {
+        linuxGuiDebug('key_press → ydotool failed and ydotoold is down — attempting auto-start');
+        const started = await linuxAutoStartYdotoold();
+        if (started) {
+          ydotooldAutoStarted = true;
+          linuxGuiDebug('key_press → ydotoold auto-started, retrying ydotool');
+          try {
+            await executeCommandSafe('ydotool', args, { timeout: 5000 });
+            linuxGuiDebug(`key_press → ydotool OK after auto-start (tried=${tried.join('→')})`);
+            return;
+          } catch (retryErr) {
+            const retryMsg = (retryErr as Error).message;
+            linuxGuiDebug(`key_press → ydotool still FAILED after auto-start: ${retryMsg.replace(/\n/g, ' | ')}`);
+            lastErr = retryErr;
+          }
+        }
+      }
     }
   }
   throw new Error(
@@ -8343,8 +8520,34 @@ async function main() {
             'VMware virtual Wayland and GNOME Wayland often lack this. Switch to X11 or use scrot (X11-only) as fallback.'
         );
       }
-      if (session === 'wayland' && linuxCommandExistsSync('ydotool') && !linuxCommandExistsSync('ydotoold')) {
-        linuxGuiDebug('⚠ ydotool found but ydotoold daemon binary not on PATH. Input will fail.');
+      // VMware-specific pre-warning: both grim and gnome-screenshot rely on
+      // a Wayland protocol that VMware's virtual GPU does not implement, and
+      // the only way to drive native Wayland apps from this codebase is
+      // ydotool, which needs the ydotoold daemon. If the daemon isn't up we
+      // can attempt one auto-start per session (see linuxAutoStartYdotoold),
+      // but the cleanest path is to log out and re-login as "Ubuntu on Xorg".
+      const vmware = linuxDetectVMware();
+      const ydotooldDaemonRunning = linuxCommandExistsSync('ydotoold')
+        ? await linuxIsYdotooldRunning().catch(() => false)
+        : false;
+      if (vmware && session === 'wayland') {
+        linuxGuiDebug(
+          '⚠ VMware virtual Wayland detected. grim + native Wayland input are likely broken. ' +
+            'Recommended: log out, pick "Ubuntu on Xorg" at the session chooser, log back in. ' +
+            'Quick fix: ensure ydotoold daemon is running (`pgrep -x ydotoold`).'
+        );
+      }
+      if (
+        session === 'wayland' &&
+        linuxCommandExistsSync('ydotool') &&
+        linuxCommandExistsSync('ydotoold') &&
+        !ydotooldDaemonRunning
+      ) {
+        linuxGuiDebug(
+          '⚠ ydotool + ydotoold binary found but daemon not running. ' +
+            'The click/keypress chain will try `setsid ydotoold &` once on first failure; ' +
+            'for a permanent fix, install the systemd user unit (`systemctl --user enable --now ydotoold`).'
+        );
       }
     }
 
