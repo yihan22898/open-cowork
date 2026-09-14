@@ -87,10 +87,39 @@ detect_session() {
   SESSION="$session"
 }
 
+# Detect the desktop environment. GNOME on Wayland is the worst case for GUI
+# automation: it has no wlroots screencopy (grim fails), it blocks synthetic
+# input from xdotool by design, and even ydotool is unreliable because GNOME's
+# mutter compositor does not implement the zwlr-virtual-pointer protocol.
+# When we detect that combo, we surface a hard warning so the user is not
+# stuck wondering why nothing works.
+detect_desktop() {
+  local raw="${XDG_CURRENT_DESKTOP:-unknown}"
+  DESKTOP="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$DESKTOP" == *gnome* ]]; then
+    if [[ "$SESSION" == "wayland" ]]; then
+      GNOME_WAYLAND=1
+      warn "Detected GNOME on Wayland. Screenshots and clicks will not work fully here:"
+      warn "  - grim returns 'no wlr-screencopy-unstable-v1' (mutter doesn't ship it)"
+      warn "  - xdotool clicks are silently dropped (mutter blocks synthetic input)"
+      warn "  - ydotool often fails because mutter doesn't implement zwlr-virtual-pointer"
+      warn "Workarounds, best → worst:"
+      warn "  1. Log out, pick 'Ubuntu on Xorg' at the login screen — whole session becomes X11"
+      warn "  2. Launch GUI targets with GDK_BACKEND=x11 (e.g. 'GDK_BACKEND=x11 gnome-calculator &')"
+      warn "  3. Install Sway or Hyprland instead of GNOME"
+    fi
+  fi
+}
+
 # ── install actions ─────────────────────────────────────────────────────────
 install_apt() {
-  # Common screenshot tools across both sessions.
-  local pkgs=(grim xdotool xclip)
+  # Screenshot fallbacks the MCP server tries in order: grim → scrot →
+  # gnome-screenshot. grim needs wlroots Wayland compositors. scrot and
+  # gnome-screenshot cover X11 / XWayland surfaces and are the practical
+  # fallback on GNOME Wayland (where grim returns "no wlr-screencopy").
+  # Without scrot + gnome-screenshot installed, screenshot tools silently
+  # fail on most Ubuntu machines — fix that here.
+  local pkgs=(grim scrot gnome-screenshot xdotool xclip)
   # Wayland-specific extras.
   if [[ "$SESSION" == "wayland" ]]; then
     pkgs+=(wl-clipboard ydotool)
@@ -98,7 +127,8 @@ install_apt() {
 
   $SUDO apt-get update -y
   # shellcheck disable=SC2086
-  $SUDO apt-get install -y --no-install-recommends "${pkgs[@]}"
+  $SUDO apt-get install -y --no-install-recommends "${pkgs[@]}" || \
+    warn "Some packages failed to install; rerun with --check to see what's still missing."
 
   # ydotoold daemon: needs to be running for ydotool input to work.
   if [[ "$SESSION" == "wayland" ]] && have systemctl; then
@@ -111,10 +141,14 @@ install_apt() {
 }
 
 install_dnf() {
-  local pkgs=(grim xdotool xclip)
+  # grim needs wlroots Wayland; scrot/gnome-screenshot cover X11 + XWayland
+  # surfaces so the MCP server's screenshot fallback chain has at least
+  # one tool that works on GNOME Wayland.
+  local pkgs=(grim scrot gnome-screenshot xdotool xclip)
   [[ "$SESSION" == "wayland" ]] && pkgs+=(wl-clipboard ydotool)
   # shellcheck disable=SC2086
-  $SUDO dnf install -y "${pkgs[@]}"
+  $SUDO dnf install -y "${pkgs[@]}" || \
+    warn "Some packages failed to install; rerun with --check to see what's still missing."
 
   if [[ "$SESSION" == "wayland" ]] && have systemctl && have ydotoold; then
     systemctl --user enable --now ydotoold || \
@@ -123,10 +157,14 @@ install_dnf() {
 }
 
 install_pacman() {
-  local pkgs=(grim xdotool xclip)
+  # gnome-screenshot lives in AUR on Arch-family; pacman -S may fail for it,
+  # which is fine — the script degrades gracefully (MCP server still has grim
+  # and scrot as fallbacks).
+  local pkgs=(grim scrot gnome-screenshot xdotool xclip)
   [[ "$SESSION" == "wayland" ]] && pkgs+=(wl-clipboard ydotool)
   # shellcheck disable=SC2086
-  $SUDO pacman -S --noconfirm "${pkgs[@]}"
+  $SUDO pacman -S --noconfirm "${pkgs[@]}" || \
+    warn "Some packages failed to install (gnome-screenshot may need AUR); rerun with --check."
 
   if [[ "$SESSION" == "wayland" ]] && have systemctl && have ydotoold; then
     systemctl --user enable --now ydotoold || \
@@ -135,10 +173,11 @@ install_pacman() {
 }
 
 install_zypper() {
-  local pkgs=(grim xdotool xclip)
+  local pkgs=(grim scrot gnome-screenshot xdotool xclip)
   [[ "$SESSION" == "wayland" ]] && pkgs+=(wl-clipboard ydotool)
   # shellcheck disable=SC2086
-  $SUDO zypper --non-interactive install "${pkgs[@]}"
+  $SUDO zypper --non-interactive install "${pkgs[@]}" || \
+    warn "Some packages failed to install; rerun with --check to see what's still missing."
 
   if [[ "$SESSION" == "wayland" ]] && have systemctl && have ydotoold; then
     systemctl --user enable --now ydotoold || \
@@ -151,9 +190,12 @@ install_zypper() {
 # post-install self-test.
 missing_tools() {
   local missing=()
-  # All sessions need a screenshot tool + an input tool.
+  # At least one screenshot tool. We DON'T require all three: each works on
+  # a different compositor. grim for wlroots, scrot for X11/XWayland,
+  # gnome-screenshot for GNOME Shell fallback. The MCP server tries the
+  # whole chain, but if none of these is installed every screenshot fails.
   if ! have grim && ! have scrot && ! have gnome-screenshot; then
-    missing+=("screenshot tool (grim / scrot / gnome-screenshot)")
+    missing+=("screenshot tool (install at least one: grim / scrot / gnome-screenshot)")
   fi
   # Input tool: xdotool works on X11, ydotool on wlroots Wayland. GNOME
   # Wayland blocks all input injection by design; we report that honestly.
@@ -197,6 +239,7 @@ if [[ "$CHECK_ONLY" -eq 0 ]]; then
 fi
 detect_distro
 detect_session
+detect_desktop
 
 if [[ "$CHECK_ONLY" -eq 1 ]]; then
   log "Checking installed tools..."
@@ -235,3 +278,15 @@ fi
 
 log "All set. GUI automation should work on the next agent loop run."
 log "If you previously launched the AppImage, restart it so the preflight check re-runs."
+
+# Final hard warning if this is GNOME Wayland — even with all tools installed,
+# the user will hit synthetic-input blocks that no script can fix. Make that
+# obvious before they go debugging the wrong layer.
+if [[ "${GNOME_WAYLAND:-0}" == "1" ]]; then
+  warn ""
+  warn "==> REMINDER: you are on GNOME Wayland. Tools were installed, but:"
+  warn "    - mouse clicks via xdotool/ydotool may still be silently dropped"
+  warn "    - screenshots of native Wayland windows may be black/empty"
+  warn "    For reliable GUI automation, switch to an X11 session at login:"
+  warn "      logout → click the gear icon → 'Ubuntu on Xorg'"
+fi
