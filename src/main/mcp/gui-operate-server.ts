@@ -1760,11 +1760,28 @@ export async function linuxTakeScreenshot(
   if (installed.length === 0) {
     throwLinuxToolMissing('grim', detectLinuxInstallCommand());
   }
-  // Wayland order: grim → scrot → gnome-screenshot. X11: scrot → grim → gnome-screenshot.
-  // gnome-screenshot has no region capture, so it's skipped when a region was requested.
+  // Wayland order depends on which compositor is running:
+  //   - GNOME Wayland:  grim → gnome-screenshot → scrot
+  //     scrot captures the X server (XWayland) which on a Wayland session
+  //     can't see native Wayland apps — e.g. GNOME Calculator renders to the
+  //     Wayland surface, so scrot returns a black image. gnome-screenshot
+  //     uses the XDG Desktop Portal which is the official Wayland capture
+  //     path; it requires a one-time consent dialog per session.
+  //   - Other Wayland (KDE/Sway/etc): grim → scrot → gnome-screenshot
+  //     XWayland still gets X11 apps if the user runs any, and gnome-screenshot
+  //     may be missing entirely outside GNOME.
+  // X11: scrot → grim → gnome-screenshot (X11 renders through X server,
+  //      scrot works without portal consent).
+  //
+  // gnome-screenshot has no region capture, so it's skipped when a region
+  // was requested.
+  const desktop = (process.env.XDG_CURRENT_DESKTOP || '').toLowerCase();
+  const isGnomeWayland = session === 'wayland' && /gnome/.test(desktop);
   const order: Array<'grim' | 'scrot' | 'gnome-screenshot'> =
     session === 'wayland'
-      ? ['grim', 'scrot', 'gnome-screenshot']
+      ? isGnomeWayland
+        ? ['grim', 'gnome-screenshot', 'scrot']
+        : ['grim', 'scrot', 'gnome-screenshot']
       : ['scrot', 'grim', 'gnome-screenshot'];
   const tried: Array<'grim' | 'scrot' | 'gnome-screenshot'> = [];
   let lastErr: unknown;
@@ -1772,10 +1789,26 @@ export async function linuxTakeScreenshot(
     if (!installed.includes(tool)) continue;
     if (region && tool === 'gnome-screenshot') continue;
     tried.push(tool);
-    linuxGuiDebug(`screenshot → trying ${tool} ${outputPath}${region ? ` region=${JSON.stringify(region)}` : ''}`);
+    linuxGuiDebug(
+      `screenshot → trying ${tool} ${outputPath}` +
+        (region ? ` region=${JSON.stringify(region)}` : '') +
+        ` (session=${session} desktop=${process.env.XDG_CURRENT_DESKTOP || '(unset)'})`,
+    );
     try {
       await linuxTakeScreenshotWithTool(tool, outputPath, region);
-      linuxGuiDebug(`screenshot → ${tool} OK (tried=${tried.join('→')})`);
+      // Sanity-check the captured image: a near-empty file or all-black PNG
+      // means the capture path returned something but the actual pixels are
+      // empty (e.g. scrot via XWayland when no X11 apps are visible, or
+      // grim returning a 0-byte frame on a headless pipeline). Try the next
+      // tool so the AI doesn't act on a black image.
+      const stat = await fs.stat(outputPath).catch(() => null);
+      if (!stat || stat.size < 1024) {
+        const sizeNote = stat ? `${stat.size}B` : 'missing';
+        linuxGuiDebug(`screenshot → ${tool} returned empty file (${sizeNote}) — trying next tool`);
+        lastErr = new Error(`${tool} produced empty screenshot (${sizeNote})`);
+        continue;
+      }
+      linuxGuiDebug(`screenshot → ${tool} OK (tried=${tried.join('→')}, size=${stat.size}B)`);
       return;
     } catch (err) {
       const msg = (err as Error).message;
