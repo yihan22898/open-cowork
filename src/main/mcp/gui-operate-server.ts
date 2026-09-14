@@ -6530,12 +6530,9 @@ async function planGUIActions(
   }>;
   summary?: string;
 }> {
-  // Supported on both macOS and Windows
-  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32') {
-    throw new Error(`GUI action planning is not supported on platform: ${PLATFORM}`);
-  }
-
-  // Take screenshot to understand current GUI state
+  // Take screenshot to understand current GUI state. Linux now works because
+  // linuxTakeScreenshot has a grim→scrot→gnome-screenshot fallback chain and
+  // the screenshot bytes are platform-agnostic for the vision API.
   const screenshotPath = path.join(SCREENSHOTS_DIR, `gui_plan_${Date.now()}.png`);
   await takeScreenshot(screenshotPath, displayIndex);
 
@@ -6678,11 +6675,6 @@ async function locateGUIElement(
   reasoning?: string;
   boundingBox?: { left: number; top: number; right: number; bottom: number };
 }> {
-  // Supported on both macOS and Windows
-  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32') {
-    throw new Error(`Element location is not supported on platform: ${PLATFORM}`);
-  }
-
   // On macOS, prefer deterministic Dock lookup for Dock-related requests.
   // This avoids visual mis-grounding when multiple similar icons are present.
   if (PLATFORM === 'darwin') {
@@ -6725,9 +6717,10 @@ async function locateGUIElement(
 
     if (targetDisplay) {
       // On macOS, coords are logical (divided by scaleFactor), so multiply back to get pixels.
-      // On Windows, coords are already in physical pixels (no scaleFactor division was applied).
+      // On Windows and Linux, the vision API returns pixel coordinates that already
+      // match the screenshot resolution, so the effective scale factor is 1.
       const rawScaleFactor = targetDisplay.scaleFactor || 1;
-      const effectiveScaleFactor = PLATFORM === 'win32' ? 1 : rawScaleFactor;
+      const effectiveScaleFactor = PLATFORM === 'darwin' ? rawScaleFactor : 1;
       const pixelX = coords.x * effectiveScaleFactor;
       const pixelY = coords.y * effectiveScaleFactor;
 
@@ -6953,11 +6946,6 @@ async function performVisionBasedInteraction(
   taskDescription: string,
   displayIndex?: number
 ): Promise<string> {
-  // Supported on both macOS and Windows
-  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32') {
-    throw new Error(`Vision-based GUI interaction is not supported on platform: ${PLATFORM}`);
-  }
-
   writeMCPLog(`[performVisionBasedInteraction] Starting task: "${taskDescription}"`, 'Task Start');
   writeMCPLog(
     `[performVisionBasedInteraction] Display index: ${displayIndex ?? 'main'}`,
@@ -7063,11 +7051,6 @@ async function performVisionBasedInteraction(
  * Verify GUI state using vision
  */
 async function verifyGUIState(question: string, displayIndex?: number): Promise<string> {
-  // Supported on both macOS and Windows
-  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32') {
-    throw new Error(`GUI verification is not supported on platform: ${PLATFORM}`);
-  }
-
   const normalizedDisplayIndex = displayIndex ?? 0;
   const regionKey = toRegionKey(undefined);
   const reusable = getReusableScreenshot(normalizedDisplayIndex, regionKey);
@@ -7252,11 +7235,6 @@ function updateScreenshotCache(entry: ScreenshotCacheEntry): void {
  * Extract information from GUI screenshot using vision
  */
 async function extractGUIInfo(extractionPrompt: string, displayIndex?: number): Promise<string> {
-  // Supported on both macOS and Windows
-  if (PLATFORM !== 'darwin' && PLATFORM !== 'win32') {
-    throw new Error(`GUI extraction is not supported on platform: ${PLATFORM}`);
-  }
-
   // Take screenshot
   const screenshotPath = path.join(SCREENSHOTS_DIR, `gui_extract_${Date.now()}.png`);
   await takeScreenshot(screenshotPath, displayIndex);
