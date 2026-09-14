@@ -261,7 +261,7 @@ case "$PKG_MGR" in
   pacman) install_pacman ;;
   zypper) install_zypper ;;
   unknown)
-    die "Unsupported distro ($DISTRO_ID). Install manually: grim, xdotool/ydotool, xclip/wl-clipboard."
+    die "Unsupported distro ($DISTRO_ID). Install manually: grim, scrot, gnome-screenshot, xdotool/ydotool, xclip/wl-clipboard."
     ;;
 esac
 
