@@ -2010,9 +2010,16 @@ export async function linuxTakeScreenshot(
   // was requested.
   const desktop = (process.env.XDG_CURRENT_DESKTOP || '').toLowerCase();
   const isGnomeWayland = session === 'wayland' && /gnome/.test(desktop);
+  const isVmwareWayland = session === 'wayland' && linuxDetectVMware();
+  // On VMware's virtual Wayland, gnome-screenshot's "Use GNOME Shell's
+  // builtin screenshot interface" path hangs until our 10s timeout, then
+  // crashes with `gdk_pixbuf_get_from_surface: assertion 'width > 0 && height > 0' failed`
+  // — the virtual surface reports zero dimensions. It always times out,
+  // costs the user 10s per screenshot, and never produces a useful image.
+  // Drop it from the order so we skip straight to scrot on VMware Wayland.
   const order: Array<'grim' | 'scrot' | 'gnome-screenshot'> =
     session === 'wayland'
-      ? isGnomeWayland
+      ? isGnomeWayland && !isVmwareWayland
         ? ['grim', 'gnome-screenshot', 'scrot']
         : ['grim', 'scrot', 'gnome-screenshot']
       : ['scrot', 'grim', 'gnome-screenshot'];
@@ -2044,17 +2051,30 @@ export async function linuxTakeScreenshot(
       // empty (e.g. scrot via XWayland when no X11 apps are visible, or
       // grim returning a 0-byte frame on a headless pipeline). Try the next
       // tool so the AI doesn't act on a black image.
+      //
+      // The 8KB threshold was chosen empirically: a real screenshot of even a
+      // 640x480 desktop is >20KB as a PNG, and a typical 1920x1080 capture
+      // is hundreds of KB. Anything under 8KB is "the file exists but the
+      // pixels are essentially blank" — typical of XWayland capturing only
+      // its root window when the foreground app is a native Wayland surface.
       const stat = await fs.stat(outputPath).catch(() => null);
-      if (!stat || stat.size < 1024) {
+      if (!stat || stat.size < 8192) {
         const sizeNote = stat ? `${stat.size}B` : 'missing';
-        linuxGuiDebug(`screenshot → ${tool} returned empty file (${sizeNote}) — trying next tool`);
-        linuxGuiDetailed('screenshot.empty', {
+        const isTiny = stat && stat.size >= 1024;
+        const reason = isTiny
+          ? `${tool} produced near-empty screenshot (${sizeNote}) — XWayland likely captured only the root window because the foreground app is a native Wayland window`
+          : `${tool} produced empty screenshot (${sizeNote})`;
+        linuxGuiDebug(`screenshot → ${reason} — trying next tool`);
+        linuxGuiDetailed(isTiny ? 'screenshot.tiny' : 'screenshot.empty', {
           tool,
           output_path: outputPath,
           size_bytes: stat?.size ?? 0,
           duration_ms: Date.now() - screenStartedAt,
+          hint: isTiny
+            ? 'XWayland cannot see native Wayland windows. Force target apps to use X11 with GDK_BACKEND=x11.'
+            : 'capture tool returned an empty frame',
         });
-        lastErr = new Error(`${tool} produced empty screenshot (${sizeNote})`);
+        lastErr = new Error(reason);
         continue;
       }
       linuxGuiDebug(`screenshot → ${tool} OK (tried=${tried.join('→')}, size=${stat.size}B)`);
@@ -2082,10 +2102,28 @@ export async function linuxTakeScreenshot(
   // sees what we tried + the underlying cause hint.
   const triedStr = tried.join(' → ') || '(none — weird)';
   const detail = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  // Distinguish the two common Wayland failure shapes we see in practice:
+  //   1. Every tool errored out (grim: wlr-screencopy, gnome-screenshot:
+  //      surface assertion, scrot: no display). The user has a real capture
+  //      problem.
+  //   2. All tools produced tiny / black PNGs. The capture pipeline works
+  //      but the foreground app is a native Wayland window that none of
+  //      the capture paths can see. The fix is at the app layer, not the
+  //      tool layer.
+  const sawTiny = tried.length > 0 && /near-empty screenshot/.test(detail);
+  const hint = sawTiny
+    ? `Every capture tool produced a near-empty (likely all-black) PNG. ` +
+      `This almost always means the foreground application is a NATIVE Wayland ` +
+      `window (GNOME Calculator, GNOME Text Editor, Firefox with ` +
+      `widget.gtk.use-x11=false, etc.) and none of grim / gnome-screenshot / ` +
+      `scrot can read its pixels. Force the app to render via XWayland by ` +
+      `launching it with \`GDK_BACKEND=x11 gnome-calculator\` (or set the env ` +
+      `var in your shell). On VMware Wayland the cleanest fix is still to ` +
+      `log out and pick "Ubuntu on Xorg" at the session chooser.`
+    : `Common cause on Wayland: compositor lacks wlr-screencopy-unstable-v1. ` +
+      `Try switching to an X11 session (logout → "Ubuntu on Xorg") or install scrot for an X11 fallback.`;
   throw new Error(
-    `All screenshot tools failed (tried: ${triedStr}). Last error: ${detail}. ` +
-      `Common cause on Wayland: compositor lacks wlr-screencopy-unstable-v1. ` +
-      `Try switching to an X11 session (logout → "Ubuntu on Xorg") or install scrot for an X11 fallback.`,
+    `All screenshot tools failed (tried: ${triedStr}). Last error: ${detail}. ${hint}`,
   );
 }
 
@@ -5752,7 +5790,15 @@ async function callVisionAPI(
 
       writeMCPLog(`${logPrefix} Attempt ${attempt}/${MAX_RETRIES} - Success`, 'API Request');
       if (PLATFORM === 'linux') {
-        linuxGuiDetailed('vision.success', {
+        // Flag zero-length responses explicitly. We have seen models like
+        // `MiniMax-M2.7-highspeed` return HTTP 200 with an empty body —
+        // downstream JSON parsing then fails with "No JSON found", which
+        // looks like a vision parsing bug but is actually the upstream
+        // model returning nothing. Surfacing it here lets the user grep
+        // for `vision.empty_response` and know to check API credentials
+        // / model authorisation.
+        const isEmpty = result.length === 0;
+        linuxGuiDetailed(isEmpty ? 'vision.empty_response' : 'vision.success', {
           function_name: functionName || '(unknown)',
           attempt,
           duration_ms: Date.now() - attemptStartedAt,
@@ -6666,6 +6712,21 @@ async function analyzeScreenshotWithVision(
         `[analyzeScreenshotWithVision] Failed to find JSON in response. Full response: ${responseText}`,
         'Parse Error'
       );
+      // Distinguish "model returned nothing" from "model returned prose" —
+      // both fail JSON parsing but have completely different root causes.
+      // The empty case usually means the configured model isn't authorised
+      // for the user (HTTP 200 + empty body is what some gateways return
+      // when auth fails on a paid model). The prose case is usually a
+      // prompt-format issue or a chat-tuned model that ignores the JSON
+      // instruction.
+      if (responseText.trim().length === 0) {
+        throw new Error(
+          'Vision model returned an empty response (HTTP 200 with no body). ' +
+            'This usually means the configured model is not authorised for your API key ' +
+            '(common with `MiniMax-M2.7-highspeed` on personal keys) or the model id is wrong. ' +
+            'Check ANTHROPIC_API_KEY / OPENAI_API_KEY and the model id in your config.',
+        );
+      }
       throw new Error('Failed to parse vision model response: No JSON found in response');
     }
 
@@ -7014,6 +7075,15 @@ Be specific and detailed in element descriptions. For example:
       `[planGUIActions] Failed to find JSON in response. Full response: ${responseText}`,
       'Parse Error'
     );
+    // Empty-body case mirrors analyzeScreenshotWithVision — see the
+    // comment there for the rationale (auth / model-id mismatch on the
+    // configured vision route).
+    if (responseText.trim().length === 0) {
+      throw new Error(
+        'Vision model returned an empty response (HTTP 200 with no body) when asked to plan GUI actions. ' +
+          'Check your API key and configured model id.',
+      );
+    }
     throw new Error('Failed to parse action plan response: No JSON found in response');
   }
 
