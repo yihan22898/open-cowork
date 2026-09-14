@@ -921,24 +921,69 @@ let cachedCliclickPath: string | null | undefined;
 // wlr-screencopy" are visible immediately without digging through the MCP
 // log files. Tagged with `[gui-linux-debug]` so users can grep for it.
 //
-// Also mirrored to ~/.config/open-cowork/logs/gui-linux-debug.log so users
-// can `cat` the file and paste it back when reporting issues — much easier
-// than copying from a scrolling terminal.
-let linuxGuiDebugFilePath: string | null = null;
+// Also mirrored to disk so users can `cat` the file and paste it back when
+// reporting issues — much easier than copying from a scrolling terminal.
+//
+// Two destinations, both populated for every line:
+//   1. ~/.config/open-cowork/logs/gui-linux-debug.log — the global session
+//      log. Always present; covers preflight, tool-call traces, etc.
+//   2. <file-adjacent>/gui-linux-debug.log — when an action writes a file
+//      (e.g. a screenshot), the log is also dropped next to that file so
+//      the user finds it right where they were already looking. Registered
+//      lazily via `addLinuxGuiDebugFilePath()` from the producing action.
+let linuxGuiDebugFilePaths: string[] = [];
+let linuxGuiDebugDefaultPath: string | null = null;
+function ensureLinuxGuiDebugDefaultPath(): string | null {
+  if (linuxGuiDebugDefaultPath !== null) return linuxGuiDebugDefaultPath;
+  try {
+    const logDir =
+      process.env.OPEN_COWORK_LOG_DIR ||
+      path.join(process.env.HOME || os.tmpdir(), '.config', 'open-cowork', 'logs');
+    fsSync.mkdirSync(logDir, { recursive: true });
+    linuxGuiDebugDefaultPath = path.join(logDir, 'gui-linux-debug.log');
+    return linuxGuiDebugDefaultPath;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Register an additional log destination — typically the directory of a
+ * file the action is about to produce. Idempotent; safe to call multiple
+ * times for the same path. Best-effort: never throws.
+ */
+export function addLinuxGuiDebugFilePath(filePath: string): void {
+  try {
+    fsSync.mkdirSync(path.dirname(filePath), { recursive: true });
+    if (!linuxGuiDebugFilePaths.includes(filePath)) {
+      linuxGuiDebugFilePaths.push(filePath);
+    }
+  } catch {
+    // ignore — log dir might be read-only; debug logging is best-effort.
+  }
+}
+
 function linuxGuiDebug(msg: string): void {
   const line = `[gui-linux-debug] ${msg}\n`;
   process.stderr.write(line);
-  try {
-    if (!linuxGuiDebugFilePath) {
-      const logDir =
-        process.env.OPEN_COWORK_LOG_DIR ||
-        path.join(process.env.HOME || os.tmpdir(), '.config', 'open-cowork', 'logs');
-      fsSync.mkdirSync(logDir, { recursive: true });
-      linuxGuiDebugFilePath = path.join(logDir, 'gui-linux-debug.log');
+  // Build the write list lazily: always include the default path; then
+  // anything registered via `addLinuxGuiDebugFilePath`.
+  const targets: string[] = [];
+  if (linuxGuiDebugFilePaths.length === 0 && linuxGuiDebugDefaultPath === null) {
+    // First call — make sure the default exists so we have at least one.
+    const def = ensureLinuxGuiDebugDefaultPath();
+    if (def) targets.push(def);
+  } else {
+    const def = linuxGuiDebugDefaultPath ?? ensureLinuxGuiDebugDefaultPath();
+    if (def) targets.push(def);
+    targets.push(...linuxGuiDebugFilePaths);
+  }
+  for (const p of targets) {
+    try {
+      fsSync.appendFileSync(p, line);
+    } catch {
+      // Best-effort logging; never throw from the debug helper.
     }
-    fsSync.appendFileSync(linuxGuiDebugFilePath, line);
-  } catch {
-    // Best-effort logging; never throw from the debug helper.
   }
 }
 
@@ -1697,6 +1742,13 @@ export async function linuxTakeScreenshot(
   outputPath: string,
   region?: { x: number; y: number; width: number; height: number }
 ): Promise<void> {
+  // Mirror the per-session debug log to the screenshot's directory so the
+  // user finds the log right where the file is. The path is created
+  // (mkdir -p) if missing; idempotent across calls.
+  addLinuxGuiDebugFilePath(
+    path.join(path.dirname(outputPath), 'gui-linux-debug.log')
+  );
+
   // Build the full ordered list of screenshot tools so we fall back when the
   // first one fails — e.g. grim on a Wayland compositor that doesn't
   // implement wlr-screencopy-unstable-v1 (VMware, GNOME Wayland, etc.).
